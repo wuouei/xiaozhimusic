@@ -1,10 +1,16 @@
 # 小智音乐播放器 · Meting 音源 + 实时歌词
 
-基于 [虾哥 xiaozhi-esp32](https://github.com/78/xiaozhi-esp32) 与 [wuooo339/xiaozhimusic](https://github.com/wuooo339/xiaozhimusic) 的二次开发固件：在原有语音助手能力之上，接入 **Meting（网易云）公共音源**，实现「说一句话就能放歌」，并在 LCD 底部实时滚动歌词。
+基于 [虾哥 xiaozhi-esp32](https://github.com/78/xiaozhi-esp32) 与 [wuooo339/xiaozhimusic](https://github.com/wuooo339/xiaozhimusic) 的二次开发固件：在原有语音助手能力之上，接入 **Meting（网易云）公共音源**，做到「说一句话就能放歌」，并在 SPI 彩屏底部实时滚动歌词。
 
-> 本仓库为个人改造版，非上游官方版本。默认针对 **ESP32-S3 + ST7789 240×320 + CH343 串口** 的面包板方案调整。
+> 本仓库为个人改造版，**非上游官方版本**。默认硬件为「ESP32-S3 N16R8 CAM 开发板 + OV3660 摄像头 + ZTS6672 数字麦 + HT517 I2S 功放 + 1.54 寸 SPI 彩屏」的面包板方案。
 
 ---
+
+## 目录
+
+- [特性](#特性) · [与上游的差异](#与上游的差异) · [硬件清单](#硬件清单) · [接线方案](#接线方案)
+- [部署步骤](#部署步骤) · [使用](#使用) · [实现说明](#实现说明) · [可调参数](#可调参数)
+- [常见问题](#常见问题) · [目录结构](#目录结构)
 
 ## 特性
 
@@ -15,6 +21,7 @@
 | 📜 实时歌词 | 拉取 LRC，按实际播放进度高亮当前行，底部三行滚动（上一行 / 当前行 / 下一行） |
 | 🏷️ 歌名浮显 | 每首歌开头显示「歌名 - 歌手」4 秒后自动隐藏，不占歌词空间 |
 | 🎙️ 播放中可打断 | 音乐播放时仍可喊「小智」唤醒并下指令（修复了唤醒任务被饿死的问题） |
+| 📷 拍照识图 | OV3660 摄像头，说「看看这是什么」即可上传图片给大模型 |
 | 🔁 双解码器 | MP3 走 ESP-ADF `http_stream` + MP3 解码；M4A 走内置解码器，按 URL 自动分流 |
 | 🌐 双音源实例 | 搜索与「直链/歌词」分别使用不同 Meting 实例，规避单个实例的搜索限流 |
 
@@ -27,36 +34,162 @@
 - **歌词**：新增 `LyricParser`（多维时间戳、间奏空行、元数据忽略、二分查找）+ 底部叠加面板。
 - **唤醒**：`afe_wake_word` 检测任务优先级 3 → 7，避免音乐播放时「喂数据」任务占满 ringbuffer 导致喊不动。
 - **稳定性**：HTTP 客户端补 `crt_bundle_attach`，解决 HTTPS 音频流的 `SSL_SETUP_FAILED`；播放队列加高水位限流，杜绝静默丢帧。
+- **SDK 版本**：官方 `main` 分支已升级到 ESP-IDF 6.0.1+，**本仓库固定在 ESP-IDF v5.4.4 + ESP-ADF v2.7**（ESP-ADF 目前只在 5.x 上验证可用）。请勿用 6.x 编译本仓库，否则 ADF 与 `http_stream` 组件会大量报错。
 
-## 硬件
+## 硬件清单
 
-默认板型：`CONFIG_BOARD_TYPE_BREAD_COMPACT_WIFI_CAM`（面包板 ESP32-S3 + 摄像头排针）。
+| # | 部件 | 型号 / 规格 | 数量 | 关键注意点 |
+|---|---|---|---|---|
+| 1 | 主控开发板 | **ESP32-S3 N16R8 CAM**（16 MB Flash / 8 MB Octal PSRAM），板载摄像头排座 | 1 | 必须是 **N16R8**：本固件分区表按 16 MB 布局，8 MB PSRAM 为 Octal 模式 |
+| 2 | 摄像头 | **OV3660**（板载排线直插） | 1 | 由 `esp32-camera` 自动识别 PID，无需改代码；插反会识别成 `0x0` |
+| 3 | 数字麦克风 | **ZTS6672** I2S 数字麦模块 | 1 | I2S 从机，需 SCK / WS / DATA 三线 + 3.3V；有 L/R 脚的接地选左声道 |
+| 4 | 音频功放 | **HT517** I2S 音频功放模块（3 W 单声道） | 1 | `SD` 使能脚必须拉高，否则静音；建议 5 V 供电才有 3 W |
+| 5 | 喇叭 | **4 Ω 3 W 2831 腔体喇叭** | 1 | 接功放 `OUT+ / OUT-`，不要接地 |
+| 6 | 屏幕 | **1.54 寸 SPI 彩屏**（ST7789 驱动） | 1 | 有 240×320 与 240×240 两种，**必须与 menuconfig 里选的尺寸一致** |
+| 7 | 面包板 | 400 孔 | 2 | 一块放主控 + 屏幕，一块放功放 + 麦克风，减少走线干扰 |
+| 8 | 导线 | 跳线一盒 / 杜邦线若干 | — | 建议 20 cm 以内；I2S 时钟线过长会引入杂音 |
+| 9 | 数据线 | USB-C / Micro-USB 数据线（能传数据） | 1 | 只能充电的线会识别不到串口 |
 
-| 部件 | 型号 / 引脚 |
+> 整个系统只需要一路 5 V（USB）供电，功放与主控共地即可。
+
+## 接线方案
+
+### 引脚总表
+
+对应 `main/boards/bread-compact-wifi-s3cam/config.h`，与 ESP32-S3 CAM 板的丝印 GPIO 编号一致。**改线必须同步改 `config.h`**。
+
+**SPI 彩屏（ST7789）**
+
+| 屏幕引脚 | ESP32-S3 | 说明 |
+|---|---|---|
+| VCC | 3V3 | 不要接 5 V |
+| GND | GND | |
+| SCL / CLK | GPIO19 | SPI 时钟 |
+| SDA / MOSI | GPIO20 | SPI 数据 |
+| RES / RST | GPIO21 | 复位 |
+| DC | GPIO47 | 数据/命令选择 |
+| CS | GPIO45 | 片选 |
+| BLK / BL | GPIO38 | 背光，PWM 调光 |
+
+**HT517 功放**
+
+| 功放引脚 | ESP32-S3 | 说明 |
+|---|---|---|
+| VIN | 5V | 5 V 供电才出 3 W |
+| GND | GND | 与主控共地 |
+| SD | 3V3 | **使能脚，必须拉高**，悬空即静音 |
+| BCLK | GPIO40 | I2S 位时钟 |
+| LRC / LRCLK | GPIO41 | I2S 帧时钟 |
+| DIN | GPIO39 | I2S 数据（主控 → 功放） |
+| OUT+ / OUT- | 喇叭 + / - | 差分输出，不要接 GND |
+
+**ZTS6672 数字麦克风**
+
+| 麦克风引脚 | ESP32-S3 | 说明 |
+|---|---|---|
+| VDD | 3V3 | |
+| GND | GND | |
+| SCK / BCLK | GPIO2 | I2S 位时钟（主控输出） |
+| WS / LRCLK | GPIO1 | I2S 帧时钟（主控输出） |
+| SD / DATA | GPIO42 | I2S 数据（麦克风 → 主控） |
+| L/R（若有） | GND | 接地 = 左声道 |
+
+**其他**
+
+| 功能 | 引脚 |
 |---|---|
-| 主控 | ESP32-S3（16 MB Flash） |
-| 屏幕 | ST7789 SPI 240×320，MOSI 20 / CLK 19 / DC 47 / RST 21 / CS 45 / BL 38 |
-| 扬声器 | I2S 功放（MAX98357A 等），DOUT 39 / BCLK 40 / LRCK 41 |
-| 麦克风 | I2S 数字麦，WS 1 / SCK 2 / DIN 42 |
-| 串口 | CH343 USB 转串口（Windows 下通常为 `COM3`） |
+| 板载 LED | GPIO48 |
+| BOOT 按键 | GPIO0（单击 = 打断/对话，开机未联网时单击 = 重置配网） |
+| 摄像头 | D0~D7 = 11/9/8/10/12/18/17/16，XCLK 15，PCLK 13，VSYNC 6，HREF 7，SIOC 5，SIOD 4 |
 
-其他板型请在 `idf.py menuconfig → Xiaozhi Assistant → Board Type` 中切换，并在对应 `main/boards/<board>/config.h` 里确认屏幕与采样率定义。
+### 连接示意
 
-## 快速开始
-
-### 1. 环境
-
-- ESP-IDF **v5.4.4**
-- ESP-ADF **v2.7**（`ADF_PATH` 必须指向 ADF 根目录）
-- Python 3.11 虚拟环境（IDF 自带）
-
-```bash
-# Linux / macOS
-. $IDF_PATH/export.sh
-export ADF_PATH=/path/to/esp-adf
+```
+                        ┌───────────────────────────┐
+        ST7789 1.54"    │                           │    HT517 功放
+   ┌──────────────┐     │      ESP32-S3 N16R8       │   ┌──────────────┐
+   │ VCC ─── 3V3  │     │        CAM 开发板          │   │ VIN ─── 5V   │
+   │ GND ─── GND  │     │                           │   │ SD  ─── 3V3  │
+   │ SCL ─── 19   │◀────┤ 19 20 21 45 47 38         │   │ BCLK ── 40   │
+   │ SDA ─── 20   │◀────┤                           │──▶│ LRC ─── 41   │
+   │ RST ─── 21   │◀────┤                           │──▶│ DIN ─── 39   │
+   │ DC  ─── 47   │◀────┤                           │   │ OUT± ── 喇叭 │
+   │ CS  ─── 45   │◀────┤  1  2  42                 │   └──────────────┘
+   │ BL  ─── 38   │◀────┤        │  │  └────────────┼──▶ ZTS6672 DATA
+   └──────────────┘     │        │  └───────────────┼──▶ ZTS6672 WS
+                        │        └──────────────────┼──▶ ZTS6672 SCK
+                        │  OV3660 摄像头（板载排线） │
+                        └───────────────────────────┘
 ```
 
-Windows 下 **不要用 Git Bash** 执行 `export.sh`（会报 `MSys/Mingw is not supported`），请用 PowerShell：
+### 接线自查
+
+1. **共地**：屏幕、功放、麦克风的 GND 必须全部与主控 GND 相连（面包板两排地线要连通）。
+2. **电压**：屏幕与麦克风只用 3.3 V；只有功放 `VIN` 走 5 V。
+3. **HT517 的 SD 脚**：这是新手最容易漏的一根线，悬空时功放处于关断状态，表现为「程序正常、日志正常、就是没声音」。
+4. **麦克风的 SCK / WS 不要接反**：接反了能编译能开机，但录音全是噪声、唤醒词永远不触发。
+5. **I2S 走线**：麦克风与功放的时钟线尽量分开走，不要并排贴着，否则底噪明显。
+
+## 部署步骤
+
+以下步骤以 **Windows 10/11 + PowerShell** 为例，Linux / macOS 只需把路径换成对应写法。
+
+### 步骤 0：准备
+
+- 磁盘预留 **10 GB**（IDF + ADF + 编译产物）
+- 安装路径**不要带中文和空格**（本仓库示例用 `C:\Espressif`）
+- 一根**能传数据**的 USB 线，插上后在设备管理器里应出现 `USB-Enhanced-SERIAL CH343 (COMx)`（或 `USB JTAG/serial debug unit`）
+
+### 步骤 1：安装 ESP-IDF v5.4.4
+
+> ⚠️ 版本必须 **5.4.4**。官方 xiaozhi-esp32 的 `main` 分支现已要求 6.0.1+，但本仓库依赖的 ESP-ADF v2.7 不支持 6.x。
+
+**方式 A：图形安装器（推荐新手）**
+
+从 <https://dl.espressif.com/dl/esp-idf/> 下载 `esp-idf-tools-setup` 在线/离线安装器，安装时选择 **v5.4.4**，勾选 `esp32s3` 目标，安装目录填 `C:\Espressif`。
+
+**方式 B：命令行**
+
+```powershell
+cd C:\Espressif
+git clone -b v5.4.4 --recursive https://github.com/espressif/esp-idf.git esp-idf-v5.4.4
+cd esp-idf-v5.4.4
+.\install.bat esp32s3
+```
+
+安装完成后会生成 Python 虚拟环境，路径形如 `C:\Espressif\python_env\idf5.4_py3.11_env`。
+
+### 步骤 2：安装 ESP-ADF v2.7
+
+音乐播放依赖 ESP-ADF 的 `http_stream` 与 MP3 解码器：
+
+```powershell
+cd C:\Espressif
+git clone -b v2.7 --recursive https://github.com/espressif/esp-adf.git
+```
+
+把 `ADF_PATH` 设为**用户环境变量**（只对当前窗口 `set` 的话，关掉窗口就失效）：
+
+```powershell
+setx ADF_PATH "C:\Espressif\esp-adf"
+```
+
+> `ADF_PATH` 必须指向 ADF 根目录（里面有 `components/` 的那一层），不能指到 `components` 里面。
+
+### 步骤 3：获取本项目源码
+
+```powershell
+cd C:\Users\<你的用户名>
+git clone https://github.com/openclawyong/xiaozhimusic.git
+cd xiaozhimusic
+```
+
+说明：
+
+- `sdkconfig`、`managed_components/`、`build/` **不在仓库里**。首次 `idf.py build` 时组件管理器会从 `components.espressif.com` 下载依赖（约 1~2 分钟），需要联网。
+- 如果你的网络拉不到组件，可以先设置镜像：`$env:IDF_COMPONENT_REGISTRY_URL = "https://components.espressif.cn"`。
+
+### 步骤 4：导入编译环境（每个新终端都要做）
 
 ```powershell
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
@@ -65,54 +198,131 @@ $env:IDF_PYTHON_ENV_PATH = "C:\Espressif\python_env\idf5.4_py3.11_env"
 . C:\Espressif\frameworks\esp-idf-v5.4.4\export.ps1
 ```
 
-### 2. 配置
+> **不要用 Git Bash 执行 `export.sh`**，会报 `MSys/Mingw is not supported`。Windows 下必须用 PowerShell 的 `export.ps1`。
 
-```bash
+### 步骤 5：设定目标芯片
+
+```powershell
+idf.py set-target esp32s3
+```
+
+首次执行会生成 `sdkconfig`（16 MB Flash、Octal 80 MHz PSRAM 已在 `sdkconfig.defaults.esp32s3` 里预设好）。
+
+### 步骤 6：配置板型与屏幕
+
+```powershell
 idf.py menuconfig
 ```
 
-需要确认的项：
+需要逐项确认（用 `/` 可搜索关键字）：
 
-- `Xiaozhi Assistant → Board Type`：选择你的板型
-- `Component config → LCD`：`ST7789 240x320`（与实物一致）
-- Wi-Fi 可在首次开机时通过配网热点（`192.168.4.1`）配置，无需写死在代码里
+| 菜单路径 | 配置项 | 取值（括号内为 Kconfig 名） |
+|---|---|---|
+| `Xiaozhi Assistant` | **Board Type** | `面包板新版接线（WiFi）+ LCD + Camera`（`BOARD_TYPE_BREAD_COMPACT_WIFI_CAM`） |
+| `Xiaozhi Assistant` | **LCD Type** | `ST7789, 分辨率240*320, IPS`（`LCD_ST7789_240X320`）<br>若 1.54 寸屏是 240×240，改选 `ST7789, 分辨率240*240` |
+| `Xiaozhi Assistant` | Wake Word | `Use AFE Wake Word`（默认，唤醒词「你好小智」来自 `srmodels`） |
+| `Serial flasher config` | Flash size | `16 MB` |
+| `Component config` → ESP PSRAM | Mode / Speed | `Octal Mode PSRAM` / `80 MHz` |
+| `Partition Table` | Custom partition CSV | `partitions/v1/16m.csv` |
+| `Component config` → Log output | Default log level | `Info`（排查问题时临时改 `Debug`） |
 
-### 3. 编译
+**屏幕尺寸一定要对上**：选 320 高而实物是 240 高时，屏幕只能显示上面 240 行，底部的歌词面板会被裁到屏幕外，表现为「有黑框没字」或「文字重叠」。
 
-```bash
+保存退出（`Esc` 连按，问是否保存选 `Yes`）后，`main/boards/bread-compact-wifi-s3cam/config.h` 里的 `DISPLAY_WIDTH/HEIGHT` 会随所选 LCD Type 自动生效。
+
+### 步骤 7：编译
+
+```powershell
 idf.py build
 ```
 
-### 4. 烧录
+- 首次全量编译约 **5~10 分钟**（视机器性能），产物：
+  - `build/xiaozhi.bin`（应用，约 4.8 MB）
+  - `build/bootloader/bootloader.bin`
+  - `build/partition_table/partition-table.bin`
+- 看到 `Project build complete` 即成功。
+- 编译卡住不动、CPU 不涨时：`Ctrl+C` 后删 `build/.ninja_lock`，再执行一次 `idf.py build`。
 
-**推荐：只烧 app 分区**（保留 NVS 里的 Wi-Fi 配置与音量设置）
+### 步骤 8：烧录
 
-```bash
-idf.py -p COM3 app-flash
-```
+先确认串口号（设备管理器，或 `Get-CimInstance Win32_SerialPort`），下面示例用 `COM3`。
 
-**整片烧录**（首次或分区表变更时；会清空 NVS，需要重新配网）
+**首次烧录 / 改过分区表 → 整片烧录**
 
-```bash
-# 先合并为单文件（Windows PowerShell 示例）
+```powershell
+# 合并为单文件
 python -m esptool --chip esp32s3 merge_bin -o build/merged-binary.bin `
   --flash_mode dio --flash_freq 80m --flash_size 16MB `
-  0x0 build/bootloader/bootloader.bin `
-  0x8000 build/partition_table/partition-table.bin `
-  0xd000 build/ota_data_initial.bin `
-  0x10000 build/srmodels/srmodels.bin `
+  0x0      build/bootloader/bootloader.bin `
+  0x8000   build/partition_table/partition-table.bin `
+  0xd000   build/ota_data_initial.bin `
+  0x10000  build/srmodels/srmodels.bin `
   0x100000 build/xiaozhi.bin
 
-python -m esptool --chip esp32s3 -p COM3 -b 460800 write_flash 0x0 build/merged-binary.bin
+# 写入
+python -m esptool --chip esp32s3 -p COM3 -b 460800 `
+  --before default_reset --after hard_reset write_flash 0x0 build/merged-binary.bin
 ```
 
-### 5. 看日志
+**日常改代码 → 只烧 app 分区**（保留 NVS 里的 Wi-Fi 账号与音量）
 
-```bash
+```powershell
+idf.py -p COM3 app-flash
+# 或者
+python -m esptool --chip esp32s3 -p COM3 -b 460800 write_flash 0x100000 build/xiaozhi.bin
+```
+
+> **整片烧录会覆盖 NVS 分区，Wi-Fi 配置被清空**，之后必须重新配网。日常开发请只用 `app-flash`。
+
+分区地址对照（`partitions/v1/16m.csv`）：
+
+| 分区 | 偏移 | 大小 |
+|---|---|---|
+| nvs | 0x9000 | 0x4000 |
+| otadata | 0xd000 | 0x2000 |
+| phy_init | 0xf000 | 0x1000 |
+| model（语音模型） | 0x10000 | 0xF0000 |
+| ota_0（应用） | 0x100000 | 6 MB |
+| ota_1 | 0x700000 | 6 MB |
+
+### 步骤 9：配网
+
+首次开机（或整片烧录后）设备进入配网模式：
+
+1. 手机连设备热点（名称形如 `Xiaozhi-xxxx`，无密码）；
+2. 浏览器打开 `192.168.4.1`；
+3. 选择你家 2.4 GHz Wi-Fi、输入密码、保存；
+4. 设备重启并连上网络。
+
+> ESP32-S3 只支持 **2.4 GHz**，5 GHz 热点搜不到。
+> 已配过网但想换网络：开机 3 秒内单击 BOOT 键，会清除配置重新进入配网。
+
+### 步骤 10：绑定控制台 + 验收
+
+1. 登录 <https://xiaozhi.me> 注册账号（个人用户可免费使用 Qwen 实时模型）；
+2. 控制台「添加设备」→ 输入屏幕上显示的 6 位验证码；
+3. 在控制台把设备指向一个智能体（选 Qwen / DeepSeek 实时模型均可），保存后设备自动拉取配置。
+
+**验收清单**
+
+| 检查项 | 期望结果 |
+|---|---|
+| 开机 | 屏幕亮起，显示表情/状态图标，串口打印 `wifi connected` |
+| 说「你好小智」 | 进入聆听状态，屏幕状态变化 |
+| 说「放一首晴天」 | 屏幕先显示「晴天 - 周杰伦」，随后底部出现三行歌词 |
+| 播放中喊「你好小智」 | 音乐立刻停止，进入对话（验证唤醒优先级修复） |
+| 说「看看这是什么」 | 摄像头拍照并上传，助手描述画面 |
+| 静置 1 分钟 | 无重启、无 `ESP_ERROR`、喇叭无爆音 |
+
+想看实时日志：
+
+```powershell
 idf.py -p COM3 monitor
 ```
 
-歌词链路的诊断日志长这样：
+退出监视器用 `Ctrl+]`。**监视器必须退出后再烧录**，否则串口被占用。
+
+歌词链路的关键日志：
 
 ```
 Lyrics downloaded: 4213 bytes, head: [00:00.00] 作词 : ...
@@ -161,7 +371,7 @@ Meting(type=url, br=320) ──302──▶ 网易云 CDN (.mp3)
                               │
                     audio_playback_queue_（上限 64 块，高水位 48 暂停生产）
                               │
-                    AudioOutputTask ─▶ I2S DMA（6 × 240 帧 ≈ 60ms）──▶ 喇叭
+                    AudioOutputTask ─▶ I2S DMA（6 × 240 帧 ≈ 60ms）──▶ HT517 ──▶ 喇叭
 ```
 
 关键点：
@@ -193,19 +403,19 @@ Meting(type=lrc) ──▶ 纯文本 LRC（兼容 JSON 包装 {"lyric":"..."}）
 
 | 位置 | 参数 | 说明 |
 |---|---|---|
-| `main/audio/audio_service.cc` | `LYRIC_OUTPUT_LATENCY_MS`（默认 60） | 歌词提前/延后补偿量，**调大 = 歌词更早切**，调小 = 更晚切 |
-| `main/mcp_server.cc` | `METING_SEARCH_BASE` / `METING_STREAM_BASE` | 音源地址，公共实例失效时可自行部署 Meting 后替换 |
-| `main/boards/bread-compact-wifi-s3cam/config.h` | `AUDIO_OUTPUT_SAMPLE_RATE`（24 kHz） | 不建议改到 48 kHz：silk 重采样器与 DMA 内存都会撑不住 |
+| `main/audio/audio_service.cc` | `LYRIC_OUTPUT_LATENCY_MS`（默认 60） | 歌词提前/延后补偿量，调大 = 歌词更早切，调小 = 更晚切 |
+| `main/mcp_server.cc` | `METING_SEARCH_BASE` / `METING_STREAM_BASE` | 音源地址，公共实例失效时可自建 Meting 后替换 |
+| `main/boards/bread-compact-wifi-s3cam/config.h` | `AUDIO_OUTPUT_SAMPLE_RATE`（24 kHz） | 不建议改 48 kHz：silk 重采样器与 DMA 内存都会撑不住 |
+| `main/boards/bread-compact-wifi-s3cam/config.h` | I2S / SPI 引脚宏 | 换线后必须同步修改 |
 | `main/display/lcd_display.cc` | 歌词面板高度 / 配色 | 面板 116（无歌名）/ 138（显示歌名）两套布局 |
 
 ## 常见问题
 
-**烧录报 `Could not open COM3, the port is busy`**
-串口被占用，多半是之前的 `idf.py monitor` 没退出。关掉监视器窗口，或查杀残留进程：
+**编译报 `ADF_PATH is not set` / 找不到 `esp-adf`**
+`ADF_PATH` 没设或设错层级。先 `$env:ADF_PATH = "C:\Espressif\esp-adf"`，再 `. export.ps1`，然后 `idf.py fullclean && idf.py build`。
 
-```powershell
-Get-CimInstance Win32_Process -Filter "Name='python.exe'" | Where-Object { $_.CommandLine -match 'idf' }
-```
+**编译报 `MSys/Mingw is not supported`**
+在 Git Bash / MSYS 里执行了 `export.sh`。改用 PowerShell 的 `export.ps1`。
 
 **PowerShell 导入环境报「禁止运行脚本」**
 
@@ -213,11 +423,30 @@ Get-CimInstance Win32_Process -Filter "Name='python.exe'" | Where-Object { $_.Co
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
 ```
 
-**编译报 `MSys/Mingw is not supported`**
-说明在 Git Bash / MSYS 里执行了 `export.sh`，改用 PowerShell 的 `export.ps1`。
+**烧录报 `Could not open COM3, the port is busy`**
+串口被占用，多半是之前的 `idf.py monitor` 没退出。关掉监视器窗口，或查杀残留：
+
+```powershell
+Get-CimInstance Win32_Process -Filter "Name='python.exe'" | Where-Object { $_.CommandLine -match 'idf' }
+```
+
+**开机就 panic / 报 `Failed to allocate`、`PSRAM` 相关错误**
+板子不是 N16R8，或 PSRAM 模式选错。确认 menuconfig 里 `Octal Mode PSRAM` + `80 MHz`，Flash 16 MB 且分区表为 `partitions/v1/16m.csv`。
+
+**屏幕白屏 / 花屏 / 只显示一半**
+① 检查 `BLK` 是否接到 GPIO38；② `LCD Type` 与实物尺寸是否一致（1.54 寸常见 240×240 与 240×320 两种，选错会裁掉底部或出现文字重叠）；③ 部分模组需要把 `DISPLAY_INVERT_COLOR` 或 `DISPLAY_SPI_MODE` 反一下。
+
+**喇叭完全没声音，但日志显示在播放**
+先测 HT517 的 `SD` 脚有没有拉高（悬空即静音）；再确认 `VIN` 是 5 V、与主控共地；最后确认 `DIN/BCLK/LRC` 没有和麦克风的三根线接反。
+
+**喊「你好小智」没反应**
+麦克风 SCK / WS 接反，或 L/R 脚悬空。可用 `idf.py monitor` 看是否有 `AFE: wake word detected`；完全无音频输入时先排查接线再排查代码。
 
 **播不出声 / 只有提示音**
-确认 `sdkconfig` 里的板型与实物一致（尤其 `CONFIG_LCD_*` 与 `CONFIG_BOARD_TYPE_*`），板型错了会导致 I2S 引脚全错。
+确认 `sdkconfig` 里的板型与实物一致（尤其 `CONFIG_BOARD_TYPE_*` 与 `CONFIG_LCD_*`），板型错了会导致 I2S 引脚全错。
+
+**点歌失败、日志里搜索结果为 0 条**
+公共 Meting 实例被限流。代码已做「liiiu 搜索 → qijieya 兜底」，仍失败时隔几分钟再试，或自建 Meting 后改 `METING_SEARCH_BASE` / `METING_STREAM_BASE`。
 
 **歌词比人声慢一拍 / 抢拍**
 调 `LYRIC_OUTPUT_LATENCY_MS`。若偏差是「几秒」量级，多半不是补偿问题，而是 LRC 与音频版本不匹配（同首歌不同版本前奏长度不同）。
@@ -226,7 +455,7 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
 字库是裁剪过的 `font_puhui_16_4`，生僻字缺字形。要彻底解决需换全字库字体（体积增加 1~2 MB）。
 
 **整片烧录后 Wi-Fi 没了**
-整片烧录会覆盖 NVS 分区。要么重新配网（连设备热点 → `192.168.4.1`），要么平时只用 `idf.py app-flash`。
+整片烧录会覆盖 NVS 分区。重新配网（连设备热点 → `192.168.4.1`），或平时只用 `idf.py app-flash`。
 
 ## 目录结构
 
@@ -240,10 +469,22 @@ main/
 │   └── wake_words/afe_wake_word.cc  # 唤醒词，播放时也能唤醒
 ├── display/
 │   └── lcd_display.cc          # 主界面 + 底部歌词面板
+├── boards/
+│   ├── bread-compact-wifi-s3cam/
+│   │   ├── compact_wifi_board_s3cam.cc  # 本机默认板型：SPI 屏 + I2S simplex + 摄像头
+│   │   └── config.h                     # 引脚与屏幕/采样率定义
+│   └── common/esp32_camera.cc  # 摄像头拍照与上传
 ├── mcp_server.cc               # MCP 工具：搜索 / 播放 / 音量 / 拍照
 ├── application.cc              # 主事件循环，歌词回调调度
-└── boards/bread-compact-wifi-s3cam/config.h   # 本仓库默认板型
+partitions/v1/16m.csv           # 16 MB Flash 分区表
 ```
+
+## 参考文档
+
+- [小智官方文档](https://docs.xiaozhi.me/zh/) · [面包板 ESP32-S3 教程](https://docs.xiaozhi.me/zh/hardware/breadboard-esp32-s3.html)
+- [自定义开发板指南](https://github.com/78/xiaozhi-esp32/blob/main/docs/custom-board.md)（新增板型的官方规范）
+- [固件烧录指南](https://docs.xiaozhi.me/zh/firmware/flashing.html) · [OTA 与激活流程](https://github.com/78/xiaozhi-esp32/blob/main/docs/ota.md)
+- [MCP 协议说明](https://github.com/78/xiaozhi-esp32/blob/main/docs/mcp-usage.md)
 
 ## 致谢
 
