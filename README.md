@@ -2,7 +2,7 @@
 
 基于 [虾哥 xiaozhi-esp32](https://github.com/78/xiaozhi-esp32) 与 [wuooo339/xiaozhimusic](https://github.com/wuooo339/xiaozhimusic) 的二次开发固件：在原有语音助手能力之上，接入 **Meting（网易云）公共音源**，做到「说一句话就能放歌」，并在 SPI 彩屏底部实时滚动歌词。
 
-> 本仓库为个人改造版，**非上游官方版本**。默认硬件为「ESP32-S3 N16R8 CAM 开发板 + OV3660 摄像头 + ZTS6672 数字麦 + HT517 I2S 功放 + 1.54 寸 SPI 彩屏」的面包板方案。
+> 本仓库为个人改造版，**非上游官方版本**。默认硬件为「ESP32-S3 N16R8 CAM 开发板 + OV3660 摄像头 + ZTS6672 数字麦 + HT517 I2S 功放 + 1.54 寸 **240×240** SPI 彩屏」的面包板方案。
 
 ---
 
@@ -45,7 +45,7 @@
 | 3 | 数字麦克风 | **ZTS6672** I2S 数字麦模块 | 1 | I2S 从机，需 SCK / WS / DATA 三线 + 3.3V；有 L/R 脚的接地选左声道 |
 | 4 | 音频功放 | **HT517** I2S 音频功放模块（3 W 单声道） | 1 | `SD` 使能脚必须拉高，否则静音；建议 5 V 供电才有 3 W |
 | 5 | 喇叭 | **4 Ω 3 W 2831 腔体喇叭** | 1 | 接功放 `OUT+ / OUT-`，不要接地 |
-| 6 | 屏幕 | **1.54 寸 SPI 彩屏**（ST7789 驱动） | 1 | 有 240×320 与 240×240 两种，**必须与 menuconfig 里选的尺寸一致** |
+| 6 | 屏幕 | **1.54 寸 SPI 彩屏**（ST7789，**240×240**） | 1 | 本仓库默认按 240×240 编译；若实物是 240×320 / 240×280，需在 menuconfig 改 `LCD Type`，否则底部歌词面板会被裁掉 |
 | 7 | 面包板 | 400 孔 | 2 | 一块放主控 + 屏幕，一块放功放 + 麦克风，减少走线干扰 |
 | 8 | 导线 | 跳线一盒 / 杜邦线若干 | — | 建议 20 cm 以内；I2S 时钟线过长会引入杂音 |
 | 9 | 数据线 | USB-C / Micro-USB 数据线（能传数据） | 1 | 只能充电的线会识别不到串口 |
@@ -121,6 +121,48 @@
                         │  OV3660 摄像头（板载排线） │
                         └───────────────────────────┘
 ```
+
+### 接线图（实物照片待补）
+
+> 📷 下面 4 张是**占位示意图**，位置已留好。实拍照片的拍摄要求写在每张图的「拍摄要点」里；拍好后把照片放进 `docs/images/`，再改本节对应的图片路径即可（详见文末[替换说明](#替换为实拍照片)）。
+
+**① 整体布局**
+
+![整体接线示意](docs/images/wiring-overall.svg)
+
+**② 屏幕接线特写**
+
+![屏幕接线特写](docs/images/wiring-lcd.svg)
+
+**③ 功放与喇叭接线特写**
+
+![功放接线特写](docs/images/wiring-amp.svg)
+
+**④ 麦克风接线特写**
+
+![麦克风接线特写](docs/images/wiring-mic.svg)
+
+### 替换为实拍照片
+
+占位图全部在 `docs/images/`，按同名替换即可，无需改代码：
+
+| 文件 | 拍什么 | 建议尺寸 |
+|---|---|---|
+| `docs/images/wiring-overall.svg` | 两块面包板 + 主控 + 屏幕 + 功放 + 麦克风的**整体俯拍** | 1600×1100（3:2） |
+| `docs/images/wiring-lcd.svg` | 屏幕背面 8 根线 + 跳线颜色 | 1200×900（4:3） |
+| `docs/images/wiring-amp.svg` | HT517 的 SD 引脚、VIN 供电、喇叭 OUT± | 1200×900（4:3） |
+| `docs/images/wiring-mic.svg` | ZTS6672 五根线走向，L/R 接地 | 1200×900（4:3） |
+
+实拍图通常是 `.jpg` / `.png`，两种做法任选：
+
+1. **改 4 个路径（推荐）**：照片命名为 `wiring-overall.jpg` 等放进 `docs/images/`，然后把上面 4 处 `wiring-*.svg` 改成对应后缀，并删掉 `.svg` 占位文件。
+2. **一条命令替换**：照片就位后执行，把整篇 README 里的 `.svg)` 批量改成 `.jpg)`：
+
+```bash
+sed -i 's#\.svg)#.jpg)#g' README.md
+```
+
+如果只想保留部分占位图（比如暂时不拍麦克风特写），删掉对应那张 `![...]()` 行即可。
 
 ### 接线自查
 
@@ -219,14 +261,15 @@ idf.py menuconfig
 | 菜单路径 | 配置项 | 取值（括号内为 Kconfig 名） |
 |---|---|---|
 | `Xiaozhi Assistant` | **Board Type** | `面包板新版接线（WiFi）+ LCD + Camera`（`BOARD_TYPE_BREAD_COMPACT_WIFI_CAM`） |
-| `Xiaozhi Assistant` | **LCD Type** | `ST7789, 分辨率240*320, IPS`（`LCD_ST7789_240X320`）<br>若 1.54 寸屏是 240×240，改选 `ST7789, 分辨率240*240` |
+| `Xiaozhi Assistant` | **LCD Type** | `ST7789, 分辨率240*240`（`LCD_ST7789_240X240`，**本项目默认值**）<br>若实物是 240×320，改选 `ST7789, 分辨率240*320, IPS` |
 | `Xiaozhi Assistant` | Wake Word | `Use AFE Wake Word`（默认，唤醒词「你好小智」来自 `srmodels`） |
 | `Serial flasher config` | Flash size | `16 MB` |
 | `Component config` → ESP PSRAM | Mode / Speed | `Octal Mode PSRAM` / `80 MHz` |
 | `Partition Table` | Custom partition CSV | `partitions/v1/16m.csv` |
 | `Component config` → Log output | Default log level | `Info`（排查问题时临时改 `Debug`） |
 
-**屏幕尺寸一定要对上**：选 320 高而实物是 240 高时，屏幕只能显示上面 240 行，底部的歌词面板会被裁到屏幕外，表现为「有黑框没字」或「文字重叠」。
+**屏幕尺寸一定要对上**：本项目实物是 **1.54 寸 240×240**，`Kconfig.projbuild` 里已把 `LCD Type` 的默认值改成 `240*240`，所以 `set-target` 后不用手动改。
+如果选成 320 高而实物只有 240 高，屏幕只能画出上面 240 行，底部歌词面板会被裁到屏幕外——表现就是「有黑框但没字」或「文字重叠」。反过来（实物 320 选成 240）则下方留一条黑边。
 
 保存退出（`Esc` 连按，问是否保存选 `Yes`）后，`main/boards/bread-compact-wifi-s3cam/config.h` 里的 `DISPLAY_WIDTH/HEIGHT` 会随所选 LCD Type 自动生效。
 
@@ -333,6 +376,12 @@ Lyric progress: pos=15000ms line=11 total=68
 
 ## 使用
 
+### 界面
+
+1.54 寸 240×240 屏上的两个阶段：左边是每首歌开头 4 秒（面板 110px，带「歌名 - 歌手」），右边是歌名隐藏后的纯歌词态（面板 90px，歌词整体居中）。
+
+![240×240 歌词界面示意](docs/images/screen-preview.svg)
+
 ### 语音
 
 | 说法 | 行为 |
@@ -407,7 +456,7 @@ Meting(type=lrc) ──▶ 纯文本 LRC（兼容 JSON 包装 {"lyric":"..."}）
 | `main/mcp_server.cc` | `METING_SEARCH_BASE` / `METING_STREAM_BASE` | 音源地址，公共实例失效时可自建 Meting 后替换 |
 | `main/boards/bread-compact-wifi-s3cam/config.h` | `AUDIO_OUTPUT_SAMPLE_RATE`（24 kHz） | 不建议改 48 kHz：silk 重采样器与 DMA 内存都会撑不住 |
 | `main/boards/bread-compact-wifi-s3cam/config.h` | I2S / SPI 引脚宏 | 换线后必须同步修改 |
-| `main/display/lcd_display.cc` | 歌词面板高度 / 配色 | 面板 116（无歌名）/ 138（显示歌名）两套布局 |
+| `main/display/lcd_display.cc` | 歌词面板高度 / 配色 | 按 `DISPLAY_HEIGHT` 自适应：240 高屏用 90 / 110 px（当前行 2 行），≥300 高屏用 116 / 138 px（当前行 3 行） |
 
 ## 常见问题
 
@@ -434,7 +483,7 @@ Get-CimInstance Win32_Process -Filter "Name='python.exe'" | Where-Object { $_.Co
 板子不是 N16R8，或 PSRAM 模式选错。确认 menuconfig 里 `Octal Mode PSRAM` + `80 MHz`，Flash 16 MB 且分区表为 `partitions/v1/16m.csv`。
 
 **屏幕白屏 / 花屏 / 只显示一半**
-① 检查 `BLK` 是否接到 GPIO38；② `LCD Type` 与实物尺寸是否一致（1.54 寸常见 240×240 与 240×320 两种，选错会裁掉底部或出现文字重叠）；③ 部分模组需要把 `DISPLAY_INVERT_COLOR` 或 `DISPLAY_SPI_MODE` 反一下。
+① 检查 `BLK` 是否接到 GPIO38；② `LCD Type` 必须是 `240*240`（选成 240×320 会让底部 80 行画在屏幕外，歌词面板正好被裁掉）；③ 部分模组需要把 `DISPLAY_INVERT_COLOR` 或 `DISPLAY_SPI_MODE` 反一下。
 
 **喇叭完全没声音，但日志显示在播放**
 先测 HT517 的 `SD` 脚有没有拉高（悬空即静音）；再确认 `VIN` 是 5 V、与主控共地；最后确认 `DIN/BCLK/LRC` 没有和麦克风的三根线接反。

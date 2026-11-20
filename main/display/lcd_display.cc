@@ -1118,12 +1118,39 @@ static std::string TruncateUtf8(const std::string& s, size_t max_chars) {
 
 // ============ 歌词显示（底部叠加层，懒创建）============
 // 布局全部用绝对定位 + 固定宽度，不用 flex（flex 在受限高度下会把子项压成 0 高）。
-// 两个阶段：
-//   ① 歌名阶段（面板 138）：歌名 y=0 / 上一行 y=28 / 当前行 y=50(高64) / 下一行 y=116
-//   ② 隐藏歌名后（面板 116）：上一行 y=4 / 当前行 y=26(高64) / 下一行 y=92
-// 歌名只在每首歌开头显示 4 秒，之后自动隐藏并把歌词上移，回收它占的高度。
+// 两个阶段：① 歌名显示中（面板较高） ② 歌名隐藏后（面板缩回，歌词上移）
+// 歌名只在每首歌开头显示 4 秒，之后自动隐藏并回收它占的高度。
+//
+// 尺寸按屏幕高度自适应：240 高的 1.54 寸屏如果沿用 320 屏的参数，
+// 面板会超出屏幕下边缘，表现为「有黑框、字被裁」。字体行高固定 20px，
+// 因此小屏把当前行压到 2 行（40px）、歌名行与上下行间距各留 2px。
+#if DISPLAY_HEIGHT >= 300
+// 大屏（240x320、320x480）：当前行 3 行
 static const int LYRIC_PANEL_H_WITH_INFO = 138;
 static const int LYRIC_PANEL_H_NO_INFO   = 116;
+static const int LYRIC_INFO_Y            = 0;
+static const int LYRIC_PREV_Y            = 4;
+static const int LYRIC_CUR_Y             = 26;
+static const int LYRIC_NEXT_Y            = 92;
+static const int LYRIC_PREV_Y_INFO       = 28;
+static const int LYRIC_CUR_Y_INFO        = 50;
+static const int LYRIC_NEXT_Y_INFO       = 116;
+static const int LYRIC_CUR_H             = 64;
+static const int LYRIC_CUR_MAX_CHARS     = 36;
+#else
+// 小屏（240x240 1.54 寸）：当前行 2 行，整块面板控制在 110px 内
+static const int LYRIC_PANEL_H_WITH_INFO = 110;
+static const int LYRIC_PANEL_H_NO_INFO   = 90;
+static const int LYRIC_INFO_Y            = 0;
+static const int LYRIC_PREV_Y            = 2;
+static const int LYRIC_CUR_Y             = 24;
+static const int LYRIC_NEXT_Y            = 66;
+static const int LYRIC_PREV_Y_INFO       = 22;
+static const int LYRIC_CUR_Y_INFO        = 44;
+static const int LYRIC_NEXT_Y_INFO       = 86;
+static const int LYRIC_CUR_H             = 40;
+static const int LYRIC_CUR_MAX_CHARS     = 26;
+#endif
 
 void LcdDisplay::EnsureLyricPanel() {
     if (lyric_panel_ != nullptr) return;
@@ -1149,7 +1176,7 @@ void LcdDisplay::EnsureLyricPanel() {
     // 歌曲名 - 歌手（小字灰色，只在开头显示）
     lyric_info_label_ = lv_label_create(lyric_panel_);
     lv_obj_set_width(lyric_info_label_, label_w);
-    lv_obj_align(lyric_info_label_, LV_ALIGN_TOP_MID, 0, 0);
+    lv_obj_align(lyric_info_label_, LV_ALIGN_TOP_MID, 0, LYRIC_INFO_Y);
     lv_label_set_long_mode(lyric_info_label_, LV_LABEL_LONG_DOT);
     lv_label_set_text(lyric_info_label_, "");
     lv_obj_set_style_text_align(lyric_info_label_, LV_TEXT_ALIGN_CENTER, 0);
@@ -1160,7 +1187,7 @@ void LcdDisplay::EnsureLyricPanel() {
     // 上一行（暗灰）
     lyric_prev_label_ = lv_label_create(lyric_panel_);
     lv_obj_set_width(lyric_prev_label_, label_w);
-    lv_obj_align(lyric_prev_label_, LV_ALIGN_TOP_MID, 0, 4);
+    lv_obj_align(lyric_prev_label_, LV_ALIGN_TOP_MID, 0, LYRIC_PREV_Y);
     lv_label_set_long_mode(lyric_prev_label_, LV_LABEL_LONG_DOT);
     lv_label_set_text(lyric_prev_label_, "");
     lv_obj_set_style_text_align(lyric_prev_label_, LV_TEXT_ALIGN_CENTER, 0);
@@ -1170,8 +1197,8 @@ void LcdDisplay::EnsureLyricPanel() {
     // 当前行（暖橙高亮，自动换行居中，最多三行）
     lyric_label_ = lv_label_create(lyric_panel_);
     lv_obj_set_width(lyric_label_, label_w);
-    lv_obj_set_height(lyric_label_, 64);
-    lv_obj_align(lyric_label_, LV_ALIGN_TOP_MID, 0, 26);
+    lv_obj_set_height(lyric_label_, LYRIC_CUR_H);
+    lv_obj_align(lyric_label_, LV_ALIGN_TOP_MID, 0, LYRIC_CUR_Y);
     lv_label_set_long_mode(lyric_label_, LV_LABEL_LONG_WRAP);
     lv_label_set_text(lyric_label_, "");
     lv_obj_set_style_text_align(lyric_label_, LV_TEXT_ALIGN_CENTER, 0);
@@ -1181,7 +1208,7 @@ void LcdDisplay::EnsureLyricPanel() {
     // 下一行（暗灰）
     lyric_next_label_ = lv_label_create(lyric_panel_);
     lv_obj_set_width(lyric_next_label_, label_w);
-    lv_obj_align(lyric_next_label_, LV_ALIGN_TOP_MID, 0, 92);
+    lv_obj_align(lyric_next_label_, LV_ALIGN_TOP_MID, 0, LYRIC_NEXT_Y);
     lv_label_set_long_mode(lyric_next_label_, LV_LABEL_LONG_DOT);
     lv_label_set_text(lyric_next_label_, "");
     lv_obj_set_style_text_align(lyric_next_label_, LV_TEXT_ALIGN_CENTER, 0);
@@ -1206,9 +1233,9 @@ void LcdDisplay::EnsureLyricPanel() {
 void LcdDisplay::ShowLyricInfo(const std::string& info) {
     if (lyric_panel_ == nullptr || lyric_info_label_ == nullptr) return;
     lv_obj_set_height(lyric_panel_, LYRIC_PANEL_H_WITH_INFO);
-    lv_obj_set_y(lyric_prev_label_, 28);
-    lv_obj_set_y(lyric_label_, 50);
-    lv_obj_set_y(lyric_next_label_, 116);
+    lv_obj_set_y(lyric_prev_label_, LYRIC_PREV_Y_INFO);
+    lv_obj_set_y(lyric_label_, LYRIC_CUR_Y_INFO);
+    lv_obj_set_y(lyric_next_label_, LYRIC_NEXT_Y_INFO);
     lv_label_set_text(lyric_info_label_, TruncateUtf8(info, 16).c_str());
     lv_obj_clear_flag(lyric_info_label_, LV_OBJ_FLAG_HIDDEN);
     if (lyric_info_timer_ != nullptr) {
@@ -1222,9 +1249,9 @@ void LcdDisplay::HideLyricInfo() {
     if (lyric_panel_ == nullptr || lyric_info_label_ == nullptr) return;
     lv_obj_add_flag(lyric_info_label_, LV_OBJ_FLAG_HIDDEN);
     lv_obj_set_height(lyric_panel_, LYRIC_PANEL_H_NO_INFO);
-    lv_obj_set_y(lyric_prev_label_, 4);
-    lv_obj_set_y(lyric_label_, 26);
-    lv_obj_set_y(lyric_next_label_, 92);
+    lv_obj_set_y(lyric_prev_label_, LYRIC_PREV_Y);
+    lv_obj_set_y(lyric_label_, LYRIC_CUR_Y);
+    lv_obj_set_y(lyric_next_label_, LYRIC_NEXT_Y);
     lv_obj_invalidate(lyric_panel_);
 }
 
@@ -1268,7 +1295,7 @@ void LcdDisplay::ShowLyric(int line_index, const std::string& text,
         lv_label_set_text(lyric_next_label_, "");
     } else {
         // 当前行最多 3 行 × 约 13 个汉字，超出会被面板裁掉，这里先截断加省略号
-        std::string cur = text.empty() ? "... " : TruncateUtf8(text, 36);
+        std::string cur = text.empty() ? "... " : TruncateUtf8(text, LYRIC_CUR_MAX_CHARS);
         lv_label_set_text(lyric_label_, cur.c_str());
         lv_label_set_text(lyric_prev_label_, TruncateUtf8(prev_text, 13).c_str());
         lv_label_set_text(lyric_next_label_, TruncateUtf8(next_text, 13).c_str());

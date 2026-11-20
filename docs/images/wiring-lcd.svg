@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 460" width="640" height="460" font-family="Segoe UI, PingFang SC, Microsoft YaHei, Helvetica, Arial, sans-serif">
+  <rect width="640" height="460" fill="#14171A"/>
+  <text x="28" y="42" font-size="18" font-weight="700" fill="#EDEDED">屏幕接线特写 · ST7789 1.54 英寸 240×240</text>
+  <text x="28" y="66" font-size="13" fill="#9A9A9A">占位图 · 拍好后替换本文件（或改 README 里的图片路径）</text>
+  <rect x="28" y="88" width="584" height="240" rx="12" fill="#1A1D21" stroke="#4A5058" stroke-width="2" stroke-dasharray="10 8"/>
+  <g fill="none" stroke="#5F6670" stroke-width="2.5" stroke-linejoin="round">
+    <rect x="292" y="168" width="56" height="40" rx="6"/>
+    <path d="M 300 168 l 6 -10 h 28 l 6 10"/>
+    <circle cx="320" cy="188" r="11"/>
+  </g>
+  <text x="320" y="238" font-size="13" fill="#7C8390" text-anchor="middle">待补充：屏幕排线与主控 SPI 引脚</text>
+  <text x="320" y="262" font-size="13" fill="#5F6670" text-anchor="middle">建议 4:3，光线均匀，引脚丝印清晰可读</text>
+  <text x="28" y="360" font-size="13" font-weight="600" fill="#D6D6D6">拍摄要点</text>
+  <circle cx="34" cy="382" r="4" fill="#FFB347"/><text x="50" y="387" font-size="13" fill="#9A9A9A">同时拍到屏幕背面 8 个引脚与面包板上的跳线颜色</text>
+  <circle cx="34" cy="406" r="4" fill="#FFB347"/><text x="50" y="411" font-size="13" fill="#9A9A9A">标注：VCC→3V3、SCL→19、SDA→20、RST→21、DC→47、CS→45、BL→38</text>
+  <circle cx="34" cy="430" r="4" fill="#FFB347"/><text x="50" y="435" font-size="13" fill="#9A9A9A">确认 VCC 接的是 3V3 而不是 5V</text>
+</svg>

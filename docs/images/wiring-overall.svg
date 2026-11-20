@@ -1,0 +1,84 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 620" width="900" height="620" font-family="Segoe UI, PingFang SC, Microsoft YaHei, Helvetica, Arial, sans-serif">
+  <rect width="900" height="620" fill="#14171A"/>
+
+  <text x="30" y="44" font-size="22" font-weight="700" fill="#EDEDED">整体接线示意 · ESP32-S3 N16R8 CAM + 1.54 英寸 240×240</text>
+  <text x="30" y="70" font-size="13" fill="#9A9A9A">占位图：实物拍好后，用照片替换 docs/images/wiring-overall.svg（或把 README 里的路径改成 .jpg）</text>
+
+  <!-- 面包板 A -->
+  <rect x="60" y="110" width="380" height="250" rx="10" fill="#23262B" stroke="#3A3F46" stroke-width="1.5"/>
+  <text x="76" y="136" font-size="15" fill="#D6D6D6">面包板 A（400 孔）</text>
+
+  <!-- 主控板 -->
+  <rect x="90" y="150" width="150" height="180" rx="8" fill="#1D3B2A" stroke="#3C7A55" stroke-width="1.5"/>
+  <text x="102" y="176" font-size="15" fill="#A8E6C0">ESP32-S3</text>
+  <text x="102" y="196" font-size="13" fill="#7FB89B">N16R8 CAM</text>
+  <text x="102" y="216" font-size="13" fill="#7FB89B">USB-C ↓ PC</text>
+  <rect x="108" y="232" width="66" height="46" rx="4" fill="#2A2E33" stroke="#4A5058"/>
+  <text x="114" y="260" font-size="13" fill="#8A9099">OV3660</text>
+  <text x="102" y="300" font-size="13" fill="#7C8390">GPIO 丝印朝上</text>
+
+  <!-- 屏幕 -->
+  <rect x="290" y="150" width="120" height="180" rx="6" fill="#0F2A3C" stroke="#2F6E96" stroke-width="1.5"/>
+  <rect x="300" y="160" width="100" height="100" rx="3" fill="#17384D"/>
+  <text x="322" y="204" font-size="13" fill="#7FB7D8">1.54"</text>
+  <text x="312" y="224" font-size="13" fill="#7FB7D8">240×240</text>
+  <text x="306" y="290" font-size="13" fill="#8FB3C7">ST7789</text>
+  <text x="306" y="310" font-size="13" fill="#8FB3C7">SPI 8 线</text>
+
+  <!-- 面包板 B -->
+  <rect x="500" y="110" width="340" height="250" rx="10" fill="#23262B" stroke="#3A3F46" stroke-width="1.5"/>
+  <text x="516" y="136" font-size="15" fill="#D6D6D6">面包板 B（400 孔）</text>
+
+  <!-- HT517 -->
+  <rect x="530" y="156" width="130" height="92" rx="6" fill="#3A2418" stroke="#8A5A32" stroke-width="1.5"/>
+  <text x="544" y="182" font-size="15" fill="#F0C49A">HT517 功放</text>
+  <text x="544" y="204" font-size="13" fill="#C9A382">I2S 3W 单声道</text>
+  <text x="544" y="226" font-size="13" fill="#C9A382">SD → 3V3</text>
+
+  <!-- 喇叭 -->
+  <circle cx="740" cy="202" r="42" fill="#26292E" stroke="#555B63" stroke-width="2"/>
+  <circle cx="740" cy="202" r="16" fill="#1A1D21" stroke="#454B53"/>
+  <text x="700" y="266" font-size="13" fill="#9A9A9A">4Ω 3W 2831</text>
+
+  <!-- 麦克风 -->
+  <rect x="530" y="282" width="130" height="56" rx="6" fill="#1E2A38" stroke="#3E5C7A" stroke-width="1.5"/>
+  <text x="544" y="306" font-size="15" fill="#A9C6E0">ZTS6672</text>
+  <text x="544" y="326" font-size="13" fill="#7E97AD">I2S 数字麦</text>
+
+  <!-- 屏幕 -> 主控 -->
+  <path d="M 290 190 C 250 190, 240 200, 240 210" stroke="#4EA6DC" stroke-width="2.5" fill="none" stroke-linecap="round"/>
+  <path d="M 290 220 C 246 220, 240 226, 240 232" stroke="#4EA6DC" stroke-width="2.5" fill="none" stroke-linecap="round"/>
+  <path d="M 290 260 C 246 260, 242 262, 240 266" stroke="#4EA6DC" stroke-width="2.5" fill="none" stroke-linecap="round"/>
+  <path d="M 290 296 C 248 296, 244 292, 240 288" stroke="#4EA6DC" stroke-width="2.5" fill="none" stroke-linecap="round"/>
+  <text x="196" y="188" font-size="13" font-weight="600" fill="#FFB347">19/20/21</text>
+  <text x="196" y="206" font-size="13" font-weight="600" fill="#FFB347">45/47/38</text>
+
+  <!-- 功放 -> 主控 -->
+  <path d="M 530 180 C 470 180, 430 150, 300 146" stroke="#E0A33E" stroke-width="2.5" fill="none" stroke-linecap="round"/>
+  <path d="M 530 204 C 460 204, 420 160, 300 150" stroke="#E0A33E" stroke-width="2.5" fill="none" stroke-linecap="round"/>
+  <path d="M 530 228 C 450 228, 410 172, 300 154" stroke="#E0A33E" stroke-width="2.5" fill="none" stroke-linecap="round"/>
+  <text x="352" y="140" font-size="13" font-weight="600" fill="#FFB347">40 / 41 / 39</text>
+
+  <!-- 功放 -> 喇叭 -->
+  <path d="M 660 180 C 690 180, 700 184, 706 190" stroke="#C4703A" stroke-width="2.5" fill="none" stroke-linecap="round"/>
+  <path d="M 660 204 C 690 204, 700 200, 706 196" stroke="#C4703A" stroke-width="2.5" fill="none" stroke-linecap="round"/>
+  <text x="664" y="174" font-size="13" fill="#C4703A">OUT±</text>
+
+  <!-- 麦克风 -> 主控 -->
+  <path d="M 530 300 C 470 300, 430 300, 240 306" stroke="#6FBF8B" stroke-width="2.5" fill="none" stroke-linecap="round"/>
+  <text x="352" y="318" font-size="13" font-weight="600" fill="#6FBF8B">2 / 1 / 42</text>
+
+  <!-- 图例 -->
+  <rect x="60" y="400" width="780" height="180" rx="10" fill="#23262B" stroke="#3A3F46" stroke-width="1.5"/>
+  <text x="80" y="428" font-size="15" fill="#D6D6D6">接线要点（实物拍照时请把这几处拍清楚）</text>
+  <circle cx="92" cy="454" r="6" fill="#4EA6DC"/>
+  <text x="110" y="459" font-size="13" fill="#9A9A9A">屏幕：SCL19 / SDA20 / RST21 / DC47 / CS45 / BL38，VCC 只接 3V3</text>
+  <circle cx="92" cy="482" r="6" fill="#E0A33E"/>
+  <text x="110" y="487" font-size="13" fill="#9A9A9A">功放：BCLK40 / LRCK41 / DIN39，VIN 接 5V，SD 必须接 3V3</text>
+  <circle cx="92" cy="510" r="6" fill="#6FBF8B"/>
+  <text x="110" y="515" font-size="13" fill="#9A9A9A">麦克风：SCK2 / WS1 / DATA42，L/R 脚接地选左声道</text>
+  <circle cx="92" cy="538" r="6" fill="#B9BEC6"/>
+  <text x="110" y="543" font-size="13" fill="#9A9A9A">三块模块的 GND 必须与主控共地（两块面包板的电源轨要连通）</text>
+  <circle cx="92" cy="566" r="6" fill="#C4703A"/>
+  <text x="110" y="571" font-size="13" fill="#9A9A9A">喇叭接功放 OUT+ / OUT-，切勿接地或直接接主控</text>
+</svg>
