@@ -1,192 +1,260 @@
-# 小智音乐播放器 | XiaoZhi Music Player
+# 小智音乐播放器 · Meting 音源 + 实时歌词
 
-（中文 | [English](README_en.md) | [日本語](README_ja.md)）
+基于 [虾哥 xiaozhi-esp32](https://github.com/78/xiaozhi-esp32) 与 [wuooo339/xiaozhimusic](https://github.com/wuooo339/xiaozhimusic) 的二次开发固件：在原有语音助手能力之上，接入 **Meting（网易云）公共音源**，实现「说一句话就能放歌」，并在 LCD 底部实时滚动歌词。
 
-## 视频演示
+> 本仓库为个人改造版，非上游官方版本。默认针对 **ESP32-S3 + ST7789 240×320 + CH343 串口** 的面包板方案调整。
 
-👉 [ESP32小智播放URL网络音乐](https://www.bilibili.com/video/BV1b3adzNErv/?spm_id_from=333.1387.list.card_archive.click&vd_source=1dde8303ebb914b487ac692a09cf5d69)
+---
 
-## 项目介绍
+## 特性
 
-这是一个基于虾哥开源 ESP32 项目扩展的音乐播放器项目，在原有小智 AI 聊天机器人功能基础上，新增了网络音乐播放功能。项目采用 MIT 许可证，支持免费使用和商业用途。
+| 能力 | 说明 |
+|---|---|
+| 🎵 语音点歌 | 说「放一首周杰伦的晴天」即搜索并播放，关键词自动提取（去掉「放一首」「的歌」等口语） |
+| 🔊 320 kbps 音质 | Meting 以 `br=320` 取网易云直链（`type=url` 返回 302 → CDN 真实 MP3 地址） |
+| 📜 实时歌词 | 拉取 LRC，按实际播放进度高亮当前行，底部三行滚动（上一行 / 当前行 / 下一行） |
+| 🏷️ 歌名浮显 | 每首歌开头显示「歌名 - 歌手」4 秒后自动隐藏，不占歌词空间 |
+| 🎙️ 播放中可打断 | 音乐播放时仍可喊「小智」唤醒并下指令（修复了唤醒任务被饿死的问题） |
+| 🔁 双解码器 | MP3 走 ESP-ADF `http_stream` + MP3 解码；M4A 走内置解码器，按 URL 自动分流 |
+| 🌐 双音源实例 | 搜索与「直链/歌词」分别使用不同 Meting 实例，规避单个实例的搜索限流 |
 
-### 基于 MCP 控制万物
+## 与上游的差异
 
-小智 AI 聊天机器人作为一个语音交互入口，利用 Qwen / DeepSeek 等大模型的 AI 能力，通过 MCP 协议实现多端控制。
+- **音源**：由 `vkeys` 换为 Meting 公共实例（网易云），不再需要私有密钥。
+  - 搜索：`https://met.liiiu.cn/meting/api`（失败自动重试一次 → 退回 `https://api.qijieya.cn/meting/`）
+  - 直链 / 歌词：`https://api.qijieya.cn/meting/`
+- **音质链路**：解码固定 44.1 kHz → 线性插值重采样到设备输出采样率（24 kHz），跨块保留相位与边界样本，长时间播放不漂移。
+- **歌词**：新增 `LyricParser`（多维时间戳、间奏空行、元数据忽略、二分查找）+ 底部叠加面板。
+- **唤醒**：`afe_wake_word` 检测任务优先级 3 → 7，避免音乐播放时「喂数据」任务占满 ringbuffer 导致喊不动。
+- **稳定性**：HTTP 客户端补 `crt_bundle_attach`，解决 HTTPS 音频流的 `SSL_SETUP_FAILED`；播放队列加高水位限流，杜绝静默丢帧。
 
-![通过MCP控制万物](docs/mcp-based-graph.jpg)
+## 硬件
 
-### 核心功能
+默认板型：`CONFIG_BOARD_TYPE_BREAD_COMPACT_WIFI_CAM`（面包板 ESP32-S3 + 摄像头排针）。
 
-#### 原有功能
-- Wi-Fi / ML307 Cat.1 4G 网络连接
-- 离线语音唤醒 [ESP-SR](https://github.com/espressif/esp-sr)
-- 支持两种通信协议（[WebSocket](docs/websocket.md) 或 MQTT+UDP）
-- 使用 OPUS 音频编解码器
-- 基于流式 ASR + LLM + TTS 架构的语音交互
-- 说话人识别，识别当前说话人 [3D Speaker](https://github.com/modelscope/3D-Speaker)
-- OLED / LCD 显示，支持表情显示
-- 电池显示和电源管理
-- 多语言支持（中文、英文、日文）
-- 支持 ESP32-C3、ESP32-S3、ESP32-P4 芯片平台
+| 部件 | 型号 / 引脚 |
+|---|---|
+| 主控 | ESP32-S3（16 MB Flash） |
+| 屏幕 | ST7789 SPI 240×320，MOSI 20 / CLK 19 / DC 47 / RST 21 / CS 45 / BL 38 |
+| 扬声器 | I2S 功放（MAX98357A 等），DOUT 39 / BCLK 40 / LRCK 41 |
+| 麦克风 | I2S 数字麦，WS 1 / SCK 2 / DIN 42 |
+| 串口 | CH343 USB 转串口（Windows 下通常为 `COM3`） |
 
-#### 新增音乐功能
-- 🎵 **网络音乐播放**：接入音乐 API，实现网络 M4A 音频的在线播放
-- 🎶 **高质量音频**：支持 M4A 格式，提供更好的音质体验
-- 🔄 **智能重采样**：自动处理不同采样率的音频转换
-- 📱 **语音控制**：通过语音指令控制音乐播放、暂停、切换等操作
+其他板型请在 `idf.py menuconfig → Xiaozhi Assistant → Board Type` 中切换，并在对应 `main/boards/<board>/config.h` 里确认屏幕与采样率定义。
 
-## 硬件要求
+## 快速开始
 
-### 推荐硬件配置
-- **主控芯片**：ESP32-S3（推荐）或 ESP32-C3、ESP32-P4
-- **显示屏**：LCD_1.54_240x240 或兼容的 OLED/LCD 屏幕
-- **音频输出**：I2S 数字音频输出，支持 MAX98357A 等功放模块
-- **麦克风**：支持语音输入和唤醒功能
-- **网络**：Wi-Fi 模块或 4G 模块
+### 1. 环境
 
-### 面包板 DIY 实践
+- ESP-IDF **v5.4.4**
+- ESP-ADF **v2.7**（`ADF_PATH` 必须指向 ADF 根目录）
+- Python 3.11 虚拟环境（IDF 自带）
 
-参考飞书文档教程：
-
-👉 ["小智AI聊天机器人百科全书"](https://ccnphfhqs21z.feishu.cn/wiki/F5krwD16viZoF0kKkvDcrZNYnhb?from=from_copylink)
-
-## 软件实现
-
-### 音频处理架构
-
-#### M4A 解码流程
-1. **网络获取**：通过 HTTP 请求获取 M4A 音频流
-2. **解码处理**：使用 ESP-ADF 库的 M4A 解码器进行音频解码
-3. **重采样**：将 44100Hz 立体声转换为 22050Hz 单声道
-4. **输出播放**：通过 I2S 接口输出到音频设备
-
-#### 技术细节
-- **原始采样率**：M4A 文件通常为 44100Hz 立体声
-- **目标采样率**：设备输出 24000Hz，转换为单声道后为 22050Hz
-- **重采样算法**：使用高质量重采样算法确保音质
-- **缓冲管理**：采用生产者-消费者模型，并行处理解码和播放
-
-### API 接口
-
-#### 音乐 API
-- **API 地址**：https://doc.vkeys.cn/api-doc/v2/
-- **音质选择**：使用 QQ 音乐 URL 音质 2（有损音质，平衡质量和带宽）
-- **格式支持**：主要支持 M4A 格式，兼容性更好
-
-#### MCP 协议扩展
-- **设备端 MCP**：控制音频播放、音量调节、播放状态等
-- **云端 MCP**：扩展大模型能力，支持音乐搜索、推荐等功能
-
-## 开发环境
-
-### 环境要求
-- **IDE**：Cursor 或 VSCode
-- **SDK**：ESP-IDF 5.4 或更高版本
-- **系统**：推荐 Linux，编译速度更快，驱动问题更少
-- **代码风格**：遵循 Google C++ 代码风格
-
-### 快速开始
-
-#### 1. 克隆项目
 ```bash
-git clone https://github.com/your-repo/xiaozhiMusic.git
-cd xiaozhiMusic
+# Linux / macOS
+. $IDF_PATH/export.sh
+export ADF_PATH=/path/to/esp-adf
 ```
 
-#### 2. 配置环境
-```bash
-# 安装 ESP-IDF
-# 参考官方文档：https://docs.espressif.com/projects/esp-idf/zh_CN/latest/esp32/get-started/
+Windows 下 **不要用 Git Bash** 执行 `export.sh`（会报 `MSys/Mingw is not supported`），请用 PowerShell：
 
-# 设置环境变量
-. $HOME/esp/esp-idf/export.sh
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
+$env:ADF_PATH = "C:\Espressif\esp-adf"
+$env:IDF_PYTHON_ENV_PATH = "C:\Espressif\python_env\idf5.4_py3.11_env"
+. C:\Espressif\frameworks\esp-idf-v5.4.4\export.ps1
 ```
 
-#### 3. 编译和烧录
+### 2. 配置
+
 ```bash
-# 配置项目
 idf.py menuconfig
-
-# 编译
-idf.py build
-
-# 烧录
-idf.py flash monitor
 ```
 
-### 配置说明
+需要确认的项：
 
-#### 网络配置
-- 配置 Wi-Fi 连接信息
-- 设置音乐 API 访问参数
-- 配置 MCP 服务器地址
+- `Xiaozhi Assistant → Board Type`：选择你的板型
+- `Component config → LCD`：`ST7789 240x320`（与实物一致）
+- Wi-Fi 可在首次开机时通过配网热点（`192.168.4.1`）配置，无需写死在代码里
 
-#### 音频配置
-- 设置 I2S 音频输出参数
-- 配置重采样参数
-- 调整音频缓冲大小
+### 3. 编译
 
-## 使用指南
+```bash
+idf.py build
+```
 
-### 语音控制命令
-- "播放音乐" - 开始播放音乐
-- "暂停音乐" - 暂停当前播放
-- "下一首" - 切换到下一首歌曲
-- "上一首" - 切换到上一首歌曲
-- "调节音量" - 调整播放音量
+### 4. 烧录
 
-### 音乐搜索
-- 支持通过歌曲名称搜索
-- 支持通过歌手名称搜索
-- 支持通过专辑名称搜索
+**推荐：只烧 app 分区**（保留 NVS 里的 Wi-Fi 配置与音量设置）
 
-## 故障排除
+```bash
+idf.py -p COM3 app-flash
+```
 
-### 常见问题
+**整片烧录**（首次或分区表变更时；会清空 NVS，需要重新配网）
 
-#### 音频播放问题
-- **无声音**：检查 I2S 连接和音频设备配置
-- **音质差**：检查网络连接和重采样设置
-- **播放卡顿**：调整音频缓冲大小和网络超时设置
+```bash
+# 先合并为单文件（Windows PowerShell 示例）
+python -m esptool --chip esp32s3 merge_bin -o build/merged-binary.bin `
+  --flash_mode dio --flash_freq 80m --flash_size 16MB `
+  0x0 build/bootloader/bootloader.bin `
+  0x8000 build/partition_table/partition-table.bin `
+  0xd000 build/ota_data_initial.bin `
+  0x10000 build/srmodels/srmodels.bin `
+  0x100000 build/xiaozhi.bin
 
-#### 网络连接问题
-- **无法连接 Wi-Fi**：检查 SSID 和密码配置
-- **API 访问失败**：检查网络连接和 API 地址配置
-- **音乐加载慢**：检查网络带宽和服务器响应
+python -m esptool --chip esp32s3 -p COM3 -b 460800 write_flash 0x0 build/merged-binary.bin
+```
 
-## 贡献指南
+### 5. 看日志
 
-欢迎提交 Issue 和 Pull Request！
+```bash
+idf.py -p COM3 monitor
+```
 
-### 开发规范
-- 遵循 Google C++ 代码风格
-- 添加适当的注释和文档
-- 确保代码通过所有测试
-- 更新相关文档
+歌词链路的诊断日志长这样：
 
-### 联系方式
-- **QQ 群**：1011329060
-- **Issues**：在 GitHub 上提交问题
-- **讨论**：欢迎在 Discussions 中交流
+```
+Lyrics downloaded: 4213 bytes, head: [00:00.00] 作词 : ...
+Lyrics loaded: 晴天 - 周杰伦, 68 lines, aligned at 12480ms -> line 9
+ShowLyric line=9 cur=故事的小黄花 next=从出生那年就飘着
+Lyric progress: pos=15000ms line=11 total=68
+```
 
-## 许可证
+## 使用
 
-本项目采用 MIT 许可证，详见 [LICENSE](LICENSE) 文件。
+### 语音
+
+| 说法 | 行为 |
+|---|---|
+| 「放一首晴天」 | 搜索并播放第一首匹配结果 |
+| 「播放周杰伦的歌」 | 按歌手搜索 |
+| 「小智，停止播放」 | 停止音乐并恢复待机 |
+
+播放过程中可以直接喊唤醒词打断，助手会停止音乐进入对话。
+
+### MCP 工具
+
+设备端通过 MCP 协议暴露以下工具，云端大模型据此控制设备：
+
+| 工具 | 参数 | 说明 |
+|---|---|---|
+| `test_search_music` | `keyword` | 搜索并播放（核心入口） |
+| `control_music` | `action`（stop / pause） | 控制播放 |
+| `self.audio_speaker.set_volume` | `volume` | 音量 |
+| `self.get_device_status` | — | 电量、网络、音量等状态 |
+| `self.screen.set_brightness` | `brightness` | 屏幕亮度 |
+| `self.screen.set_theme` | `theme` | 主题切换 |
+| `self.camera.take_photo` | `question` | 拍照识图 |
+
+## 实现说明
+
+### 音频链路
+
+```
+Meting(type=url, br=320) ──302──▶ 网易云 CDN (.mp3)
+        │
+        ├─ MP3：ESP-ADF http_stream ─▶ MP3 decoder ─▶ 44.1kHz PCM
+        └─ M4A：M4aDecoder（内置，支持 Range 请求）
+                              │
+                    线性插值重采样 44.1k → 24k（跨块相位连续）
+                              │
+                    audio_playback_queue_（上限 64 块，高水位 48 暂停生产）
+                              │
+                    AudioOutputTask ─▶ I2S DMA（6 × 240 帧 ≈ 60ms）──▶ 喇叭
+```
+
+关键点：
+
+- **HTTPS**：`http_stream` 必须设置 `crt_bundle_attach = esp_crt_bundle_attach`，否则普通地址能播、音乐 CDN 的 https 直链会报 `No server verification option set`。
+- **重采样**：解码器固定输出 44.1 kHz，设备输出 24 kHz。重采样器保留「上一块最后一个样本」与「跨块相位」，避免块边界爆音与长期累计漂移。
+- **缓冲**：播放队列积压时暂停生产而不是丢帧，网络抖动只表现为短暂停顿，不会破音。
+
+### 歌词链路
+
+```
+Meting(type=lrc) ──▶ 纯文本 LRC（兼容 JSON 包装 {"lyric":"..."}）
+        │
+   LyricParser::Parse —— 多维时间戳、忽略 [ar:]/[ti:] 元数据、空行保留为间奏
+        │
+   播放进度：music_played_samples_ / output_sample_rate - 60ms(DMA)
+        │
+   行号变化 ─▶ on_lyric_changed(line, cur, prev, next, song, artist)
+        │
+   Schedule → 主任务 → LcdDisplay::ShowLyric（LVGL 加锁更新）
+```
+
+两个容易踩的坑，已在代码里处理：
+
+1. **进度累加不能依赖歌词是否存在**。歌词在起播后 1~3 秒才下载完成，若那段时间不计数，`SetLyrics()` 算出的「已播时长」会偏小，歌词整体滞后一段且永远追不回来。
+2. **歌词面板不要用 flex 布局**。固定高度容器里 flex 会把子项压成 0 高度——结果是「黑框出现了但一个字都没有」。现在改为绝对定位 + 固定宽度。
+
+## 可调参数
+
+| 位置 | 参数 | 说明 |
+|---|---|---|
+| `main/audio/audio_service.cc` | `LYRIC_OUTPUT_LATENCY_MS`（默认 60） | 歌词提前/延后补偿量，**调大 = 歌词更早切**，调小 = 更晚切 |
+| `main/mcp_server.cc` | `METING_SEARCH_BASE` / `METING_STREAM_BASE` | 音源地址，公共实例失效时可自行部署 Meting 后替换 |
+| `main/boards/bread-compact-wifi-s3cam/config.h` | `AUDIO_OUTPUT_SAMPLE_RATE`（24 kHz） | 不建议改到 48 kHz：silk 重采样器与 DMA 内存都会撑不住 |
+| `main/display/lcd_display.cc` | 歌词面板高度 / 配色 | 面板 116（无歌名）/ 138（显示歌名）两套布局 |
+
+## 常见问题
+
+**烧录报 `Could not open COM3, the port is busy`**
+串口被占用，多半是之前的 `idf.py monitor` 没退出。关掉监视器窗口，或查杀残留进程：
+
+```powershell
+Get-CimInstance Win32_Process -Filter "Name='python.exe'" | Where-Object { $_.CommandLine -match 'idf' }
+```
+
+**PowerShell 导入环境报「禁止运行脚本」**
+
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
+```
+
+**编译报 `MSys/Mingw is not supported`**
+说明在 Git Bash / MSYS 里执行了 `export.sh`，改用 PowerShell 的 `export.ps1`。
+
+**播不出声 / 只有提示音**
+确认 `sdkconfig` 里的板型与实物一致（尤其 `CONFIG_LCD_*` 与 `CONFIG_BOARD_TYPE_*`），板型错了会导致 I2S 引脚全错。
+
+**歌词比人声慢一拍 / 抢拍**
+调 `LYRIC_OUTPUT_LATENCY_MS`。若偏差是「几秒」量级，多半不是补偿问题，而是 LRC 与音频版本不匹配（同首歌不同版本前奏长度不同）。
+
+**个别汉字显示成空白或方块**
+字库是裁剪过的 `font_puhui_16_4`，生僻字缺字形。要彻底解决需换全字库字体（体积增加 1~2 MB）。
+
+**整片烧录后 Wi-Fi 没了**
+整片烧录会覆盖 NVS 分区。要么重新配网（连设备热点 → `192.168.4.1`），要么平时只用 `idf.py app-flash`。
+
+## 目录结构
+
+```
+main/
+├── audio/
+│   ├── audio_service.cc        # 音频任务、播放队列、歌词进度驱动
+│   ├── esp_adf_mp3_player.cc   # MP3 走 ESP-ADF http_stream + decoder
+│   ├── m4a_decoder.cc          # M4A 解码 + 格式自动识别
+│   ├── lyric_parser.cc         # LRC 解析（时间戳 / 元数据 / 二分查找）
+│   └── wake_words/afe_wake_word.cc  # 唤醒词，播放时也能唤醒
+├── display/
+│   └── lcd_display.cc          # 主界面 + 底部歌词面板
+├── mcp_server.cc               # MCP 工具：搜索 / 播放 / 音量 / 拍照
+├── application.cc              # 主事件循环，歌词回调调度
+└── boards/bread-compact-wifi-s3cam/config.h   # 本仓库默认板型
+```
 
 ## 致谢
 
-- 感谢虾哥开源的小智 AI 聊天机器人项目
-- 感谢 ESP-IDF 和 ESP-ADF 开发团队
-- 感谢所有贡献者和用户的支持
+- [78/xiaozhi-esp32](https://github.com/78/xiaozhi-esp32)：小智 AI 聊天机器人固件底座
+- [wuooo339/xiaozhimusic](https://github.com/wuooo339/xiaozhimusic)：本项目 fork 的上游音乐播放实现
+- [Meting](https://github.com/metowolf/Meting)：网易云等平台音乐 API 封装
+- [ESP-ADF](https://github.com/espressif/esp-adf)：`http_stream` 与 MP3 解码
+- 上游演示视频：[ESP32 小智播放 URL 网络音乐](https://www.bilibili.com/video/BV1b3adzNErv/)
 
-## 相关项目
+`README_en.md` / `README_ja.md` 为上游原版英文与日文文档，音源部分已过时，请以本文件为准。
 
-### 服务器端项目
-- [xinnan-tech/xiaozhi-esp32-server](https://github.com/xinnan-tech/xiaozhi-esp32-server) Python 服务器
-- [joey-zhou/xiaozhi-esp32-server-java](https://github.com/joey-zhou/xiaozhi-esp32-server-java) Java 服务器
-- [AnimeAIChat/xiaozhi-server-go](https://github.com/AnimeAIChat/xiaozhi-server-go) Golang 服务器
+## 许可证
 
-### 客户端项目
-- [huangjunsen0406/py-xiaozhi](https://github.com/huangjunsen0406/py-xiaozhi) Python 客户端
-- [TOM88812/xiaozhi-android-client](https://github.com/TOM88812/xiaozhi-android-client) Android 客户端
+MIT，详见 [LICENSE](LICENSE)。

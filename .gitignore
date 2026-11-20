@@ -17,3 +17,10 @@ main/mmap_generate_emoji.h
 *.pyc
 *.bin
 mmap_generate_*.h
+
+# 本地构建/烧录临时产物（不入库）
+build*.txt
+settarget.txt
+*.bak
+一键烧录.bat
+打开监视器.bat
