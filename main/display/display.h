@@ -32,6 +32,12 @@ public:
     virtual void UpdateStatusBar(bool update_all = false);
     virtual void SetPowerSaveMode(bool on);
 
+    // 歌词显示：line_index=-2 表示清除歌词层；-1 表示前奏（显示歌曲名）；>=0 显示对应行
+    // prev_text/next_text 为上一行/下一行文本，用于滚动效果（可为空）
+    virtual void ShowLyric(int line_index, const std::string& text,
+                           const std::string& prev_text, const std::string& next_text,
+                           const std::string& song, const std::string& artist) {}
+
     inline int width() const { return width_; }
     inline int height() const { return height_; }
 

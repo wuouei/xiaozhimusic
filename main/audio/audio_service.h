@@ -10,6 +10,8 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <freertos/event_groups.h>
+#include <freertos/idf_additions.h>
+#include <esp_heap_caps.h>
 #include <esp_timer.h>
 
 #include <opus_encoder.h>
@@ -23,6 +25,7 @@
 #include "protocol.h"
 #include "m4a_decoder.h"
 #include "esp_adf_mp3_player.h"
+#include "lyric_parser.h"
 
 
 /*
@@ -58,6 +61,9 @@ struct AudioServiceCallbacks {
     std::function<void(const std::string&)> on_wake_word_detected;
     std::function<void(bool)> on_vad_change;
     std::function<void(void)> on_audio_testing_queue_full;
+    // 歌词行变化回调：参数(行索引, 当前行, 上一行, 下一行, 歌曲名, 歌手)。索引 -1 表示前奏/间奏。
+    std::function<void(int, const std::string&, const std::string&, const std::string&,
+                       const std::string&, const std::string&)> on_lyric_changed;
 };
 
 
@@ -112,6 +118,10 @@ public:
     void StopMusic();
     bool IsMusicPlaying() const { return music_playing_; }
     void SetMusicMode(bool enabled);  // 设置音乐播放模式，控制音频输入处理
+
+    // 歌词相关
+    void SetLyrics(const std::string& lrc_text, const std::string& song, const std::string& artist);
+    void ClearLyrics();
 private:
     AudioCodec* codec_ = nullptr;
     AudioServiceCallbacks callbacks_;
@@ -163,12 +173,23 @@ private:
     // ESP-ADF MP3播放器
     std::unique_ptr<EspAdfMp3Player> esp_adf_mp3_player_;
 
+    // 歌词播放：按实际输出采样数累计播放进度，驱动歌词行更新
+    // lyric_mutex_ 保护下列状态：SetLyrics（MCP 线程）与 AudioOutputTask（播放线程）并发访问
+    std::mutex lyric_mutex_;
+    LyricParser lyric_parser_;
+    std::string lyric_song_;
+    std::string lyric_artist_;
+    uint64_t music_played_samples_ = 0;  // 已输出到喇叭的采样数（单声道）
+    int last_lyric_line_ = -2;           // 上一次触发回调的行号（-2=未初始化）
+    int last_lyric_log_ms_ = 0;          // 上一次打印歌词进度的位置（诊断用）
+
     bool wake_word_initialized_ = false;
     bool audio_processor_initialized_ = false;
     bool voice_detected_ = false;
     bool service_stopped_ = true;
     bool audio_input_need_warmup_ = false;
     bool music_playing_ = false;
+    volatile bool music_task_exited_ = true;  // M4aPcmDataTask 是否已退出（用于 StopMusic 同步等待，避免并发销毁解码器）
 
     esp_timer_handle_t audio_power_timer_ = nullptr;
     std::chrono::steady_clock::time_point last_input_time_;

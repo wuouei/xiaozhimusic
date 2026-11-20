@@ -3,6 +3,9 @@
 
 #include <driver/gpio.h>
 
+// 输出采样率保持 24kHz：语音 TTS 走 silk 重采样器，其解码方向输入只支持
+// 8/12/16kHz，若输出设为 48kHz 会导致 24k->48k 重采样初始化失败、语音无声。
+// 音乐音质提升改由码率 128->320kbps 实现（对单喇叭效果明显且不破坏语音）。
 #define AUDIO_INPUT_SAMPLE_RATE  16000
 #define AUDIO_OUTPUT_SAMPLE_RATE 24000
 

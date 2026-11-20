@@ -1101,3 +1101,180 @@ void LcdDisplay::SetTheme(const std::string& theme_name) {
     // No errors occurred. Save theme to settings
     Display::SetTheme(theme_name);
 }
+
+// 按 UTF-8 字符数截断（不切断多字节汉字），超长补省略号，避免文字被面板裁掉
+static std::string TruncateUtf8(const std::string& s, size_t max_chars) {
+    size_t chars = 0, i = 0;
+    while (i < s.size() && chars < max_chars) {
+        unsigned char c = (unsigned char)s[i];
+        size_t len = (c < 0x80) ? 1 : (((c >> 5) == 0x06) ? 2 : (((c >> 4) == 0x0E) ? 3 : 4));
+        if (i + len > s.size()) break;
+        i += len;
+        chars++;
+    }
+    if (i >= s.size()) return s;
+    return s.substr(0, i) + "...";
+}
+
+// ============ 歌词显示（底部叠加层，懒创建）============
+// 布局全部用绝对定位 + 固定宽度，不用 flex（flex 在受限高度下会把子项压成 0 高）。
+// 两个阶段：
+//   ① 歌名阶段（面板 138）：歌名 y=0 / 上一行 y=28 / 当前行 y=50(高64) / 下一行 y=116
+//   ② 隐藏歌名后（面板 116）：上一行 y=4 / 当前行 y=26(高64) / 下一行 y=92
+// 歌名只在每首歌开头显示 4 秒，之后自动隐藏并把歌词上移，回收它占的高度。
+static const int LYRIC_PANEL_H_WITH_INFO = 138;
+static const int LYRIC_PANEL_H_NO_INFO   = 116;
+
+void LcdDisplay::EnsureLyricPanel() {
+    if (lyric_panel_ != nullptr) return;
+
+    const int panel_w = LV_HOR_RES - 12;
+    const int label_w = panel_w - 16;
+
+    // 直接挂到当前屏幕，独立于 content_/status_bar_ 布局，两种 style 都可用
+    lv_obj_t* scr = lv_screen_active();
+    if (scr == nullptr) return;
+    lyric_panel_ = lv_obj_create(scr);
+    lv_obj_set_size(lyric_panel_, panel_w, LYRIC_PANEL_H_NO_INFO);
+    lv_obj_align(lyric_panel_, LV_ALIGN_BOTTOM_MID, 0, -6);
+    lv_obj_set_style_radius(lyric_panel_, 10, 0);
+    lv_obj_set_style_bg_color(lyric_panel_, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_bg_opa(lyric_panel_, LV_OPA_90, 0);
+    lv_obj_set_style_border_width(lyric_panel_, 0, 0);
+    lv_obj_set_style_pad_all(lyric_panel_, 0, 0);
+    lv_obj_clear_flag(lyric_panel_, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(lyric_panel_, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_move_foreground(lyric_panel_);  // 确保盖在内容之上
+
+    // 歌曲名 - 歌手（小字灰色，只在开头显示）
+    lyric_info_label_ = lv_label_create(lyric_panel_);
+    lv_obj_set_width(lyric_info_label_, label_w);
+    lv_obj_align(lyric_info_label_, LV_ALIGN_TOP_MID, 0, 0);
+    lv_label_set_long_mode(lyric_info_label_, LV_LABEL_LONG_DOT);
+    lv_label_set_text(lyric_info_label_, "");
+    lv_obj_set_style_text_align(lyric_info_label_, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_font(lyric_info_label_, fonts_.text_font, 0);
+    lv_obj_set_style_text_color(lyric_info_label_, lv_color_hex(0x9E9E9E), 0);
+    lv_obj_add_flag(lyric_info_label_, LV_OBJ_FLAG_HIDDEN);
+
+    // 上一行（暗灰）
+    lyric_prev_label_ = lv_label_create(lyric_panel_);
+    lv_obj_set_width(lyric_prev_label_, label_w);
+    lv_obj_align(lyric_prev_label_, LV_ALIGN_TOP_MID, 0, 4);
+    lv_label_set_long_mode(lyric_prev_label_, LV_LABEL_LONG_DOT);
+    lv_label_set_text(lyric_prev_label_, "");
+    lv_obj_set_style_text_align(lyric_prev_label_, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_font(lyric_prev_label_, fonts_.text_font, 0);
+    lv_obj_set_style_text_color(lyric_prev_label_, lv_color_hex(0x7A7A7A), 0);
+
+    // 当前行（暖橙高亮，自动换行居中，最多三行）
+    lyric_label_ = lv_label_create(lyric_panel_);
+    lv_obj_set_width(lyric_label_, label_w);
+    lv_obj_set_height(lyric_label_, 64);
+    lv_obj_align(lyric_label_, LV_ALIGN_TOP_MID, 0, 26);
+    lv_label_set_long_mode(lyric_label_, LV_LABEL_LONG_WRAP);
+    lv_label_set_text(lyric_label_, "");
+    lv_obj_set_style_text_align(lyric_label_, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_font(lyric_label_, fonts_.text_font, 0);
+    lv_obj_set_style_text_color(lyric_label_, lv_color_hex(0xFFB347), 0);
+
+    // 下一行（暗灰）
+    lyric_next_label_ = lv_label_create(lyric_panel_);
+    lv_obj_set_width(lyric_next_label_, label_w);
+    lv_obj_align(lyric_next_label_, LV_ALIGN_TOP_MID, 0, 92);
+    lv_label_set_long_mode(lyric_next_label_, LV_LABEL_LONG_DOT);
+    lv_label_set_text(lyric_next_label_, "");
+    lv_obj_set_style_text_align(lyric_next_label_, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_font(lyric_next_label_, fonts_.text_font, 0);
+    lv_obj_set_style_text_color(lyric_next_label_, lv_color_hex(0x7A7A7A), 0);
+
+    // 歌名自动隐藏定时器：单次触发，显示歌名时 reset+resume
+    lyric_info_timer_ = lv_timer_create([](lv_timer_t* t) {
+        lv_timer_pause(t);
+        auto self = static_cast<LcdDisplay*>(lv_timer_get_user_data(t));
+        if (self != nullptr) {
+            self->HideLyricInfo();
+        }
+    }, 4000, this);
+    lv_timer_pause(lyric_info_timer_);
+
+    lv_obj_add_flag(lyric_panel_, LV_OBJ_FLAG_HIDDEN);
+    ESP_LOGI(TAG, "Lyric panel created (%dx%d)", panel_w, LYRIC_PANEL_H_NO_INFO);
+}
+
+// 显示歌名并重启 4 秒隐藏定时器；同时把歌词行让下去，避免和歌名挤在一起
+void LcdDisplay::ShowLyricInfo(const std::string& info) {
+    if (lyric_panel_ == nullptr || lyric_info_label_ == nullptr) return;
+    lv_obj_set_height(lyric_panel_, LYRIC_PANEL_H_WITH_INFO);
+    lv_obj_set_y(lyric_prev_label_, 28);
+    lv_obj_set_y(lyric_label_, 50);
+    lv_obj_set_y(lyric_next_label_, 116);
+    lv_label_set_text(lyric_info_label_, TruncateUtf8(info, 16).c_str());
+    lv_obj_clear_flag(lyric_info_label_, LV_OBJ_FLAG_HIDDEN);
+    if (lyric_info_timer_ != nullptr) {
+        lv_timer_reset(lyric_info_timer_);
+        lv_timer_resume(lyric_info_timer_);
+    }
+}
+
+// 隐藏歌名，并把歌词整体上移，回收歌名占用的 22px
+void LcdDisplay::HideLyricInfo() {
+    if (lyric_panel_ == nullptr || lyric_info_label_ == nullptr) return;
+    lv_obj_add_flag(lyric_info_label_, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_height(lyric_panel_, LYRIC_PANEL_H_NO_INFO);
+    lv_obj_set_y(lyric_prev_label_, 4);
+    lv_obj_set_y(lyric_label_, 26);
+    lv_obj_set_y(lyric_next_label_, 92);
+    lv_obj_invalidate(lyric_panel_);
+}
+
+void LcdDisplay::ShowLyric(int line_index, const std::string& text,
+                           const std::string& prev_text, const std::string& next_text,
+                           const std::string& song, const std::string& artist) {
+    DisplayLockGuard lock(this);
+    // -2：清除歌词层
+    if (line_index == -2) {
+        if (lyric_panel_ != nullptr) {
+            lv_obj_add_flag(lyric_panel_, LV_OBJ_FLAG_HIDDEN);
+        }
+        lyric_info_text_.clear();
+        if (lyric_info_timer_ != nullptr) lv_timer_pause(lyric_info_timer_);
+        return;
+    }
+    // 首次显示时创建面板
+    EnsureLyricPanel();
+    if (lyric_panel_ == nullptr) {
+        ESP_LOGW(TAG, "Lyric panel unavailable");
+        return;
+    }
+    lv_obj_clear_flag(lyric_panel_, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(lyric_panel_);
+
+    // 歌名只在“换歌”时显示一次（4 秒后自动隐藏），不再跟随每行歌词刷新
+    std::string info = song;
+    if (!artist.empty()) {
+        if (!info.empty()) info += " - ";
+        info += artist;
+    }
+    if (info != lyric_info_text_) {
+        lyric_info_text_ = info;
+        ShowLyricInfo(info);
+    }
+
+    if (line_index <= -1) {
+        // 前奏/间奏：占位提示，同时把上下行清空
+        lv_label_set_text(lyric_label_, text.empty() ? "-- 正在播放 --" : text.c_str());
+        lv_label_set_text(lyric_prev_label_, "");
+        lv_label_set_text(lyric_next_label_, "");
+    } else {
+        // 当前行最多 3 行 × 约 13 个汉字，超出会被面板裁掉，这里先截断加省略号
+        std::string cur = text.empty() ? "... " : TruncateUtf8(text, 36);
+        lv_label_set_text(lyric_label_, cur.c_str());
+        lv_label_set_text(lyric_prev_label_, TruncateUtf8(prev_text, 13).c_str());
+        lv_label_set_text(lyric_next_label_, TruncateUtf8(next_text, 13).c_str());
+    }
+    // 主动让整个面板重绘，避免局部刷新遗漏
+    lv_obj_invalidate(lyric_panel_);
+
+    ESP_LOGI(TAG, "ShowLyric line=%d cur=%.48s next=%.24s", line_index, text.c_str(), next_text.c_str());
+}

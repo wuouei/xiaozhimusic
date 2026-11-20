@@ -70,7 +70,10 @@ bool AfeWakeWord::Initialize(AudioCodec* codec) {
     afe_config->aec_init = codec_->input_reference();
     afe_config->aec_mode = AEC_MODE_SR_HIGH_PERF;
     afe_config->afe_perferred_core = 1;
-    afe_config->afe_perferred_priority = 1;
+    // 关键修复：播放音乐时 CPU 负载高，AFE 内部信号处理任务优先级过低会被饿死，
+    // 导致 feed 数据来不及处理、"AFE(FEED) ringbuffer full"、唤醒词检测失效。
+    // 提高 AFE 内部任务优先级，保证音乐播放时仍能及时处理唤醒词。
+    afe_config->afe_perferred_priority = 5;
     afe_config->memory_alloc_mode = AFE_MEMORY_ALLOC_MORE_PSRAM;
     
     afe_iface_ = esp_afe_handle_from_config(afe_config);
@@ -80,7 +83,7 @@ bool AfeWakeWord::Initialize(AudioCodec* codec) {
         auto this_ = (AfeWakeWord*)arg;
         this_->AudioDetectionTask();
         vTaskDelete(NULL);
-    }, "audio_detection", 4096, this, 3, nullptr);
+    }, "audio_detection", 4096, this, 7, nullptr);  // 优先级 3→7：音乐播放时能抢到 CPU 及时 fetch，避免 FEED 满导致唤醒词检测失效
 
     return true;
 }

@@ -371,6 +371,17 @@ void Application::Start() {
     callbacks.on_vad_change = [this](bool speaking) {
         xEventGroupSetBits(event_group_, MAIN_EVENT_VAD_CHANGE);
     };
+    // 歌词行变化 → 推送到显示层（Schedule 保证在 UI 线程更新 LVGL）
+    callbacks.on_lyric_changed = [this](int line, const std::string& text,
+                                        const std::string& prev, const std::string& next,
+                                        const std::string& song, const std::string& artist) {
+        Schedule([this, line, text, prev, next, song, artist]() {
+            auto display = Board::GetInstance().GetDisplay();
+            if (display) {
+                display->ShowLyric(line, text, prev, next, song, artist);
+            }
+        });
+    };
     audio_service_.SetCallbacks(callbacks);
 
     /* Start the clock timer to update the status bar */
@@ -418,7 +429,14 @@ void Application::Start() {
         }
     });
     protocol_->OnAudioChannelClosed([this, &board]() {
-        board.SetPowerSaveMode(true);
+        // 在线音乐是持续的大流量 HTTP 下载。若此时恢复 WiFi 省电（WIFI_PS_MIN_MODEM），
+        // STA 会降低 beacon 监听频率，长时间下载极易中途断线，导致歌曲播不完。
+        // 因此音乐播放期间保持 WiFi 全功率（省电关闭）。
+        if (!audio_service_.IsMusicPlaying()) {
+            board.SetPowerSaveMode(true);
+        } else {
+            ESP_LOGW(TAG, "Audio channel closed while music playing, keep WiFi power save OFF for stable streaming");
+        }
         Schedule([this]() {
             auto display = Board::GetInstance().GetDisplay();
             display->SetChatMessage("system", "");
@@ -621,6 +639,13 @@ void Application::MainEventLoop() {
 void Application::OnWakeWordDetected() {
     if (!protocol_) {
         return;
+    }
+
+    // 音乐播放中被唤醒：先停止音乐，再走正常的唤醒对话流程
+    // 这样用户喊"小智，停止播放"或"小智，换一首"时能立即响应
+    if (audio_service_.IsMusicPlaying()) {
+        ESP_LOGI(TAG, "Wake word detected during music playback, stopping music first");
+        audio_service_.StopMusic();
     }
 
     if (device_state_ == kDeviceStateIdle) {

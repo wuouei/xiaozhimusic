@@ -20,6 +20,12 @@
 
 #define TAG "AudioService"
 
+// 音频输出链路延迟（毫秒）：I2S DMA 6×240 帧 @24kHz ≈ 60ms，再留一点余量。
+// 歌词进度按"已写入 DMA 的采样数"累计，而人耳听到的声音要晚于写入时刻，
+// 所以计算显示位置时需要把这部分滞后扣掉，否则歌词会比人声早。
+// 若实测歌词仍略快/略慢，只调这一个值即可（调大=歌词延后，调小=歌词提前）。
+static const int LYRIC_OUTPUT_LATENCY_MS = 60;
+
 
 AudioService::AudioService() {
     event_group_ = xEventGroupCreate();
@@ -287,18 +293,17 @@ void AudioService::AudioInputTask() {
                 if (samples > 0) {
                     if (ReadAudioData(data, 16000, samples)) {
                         wake_word_->Feed(data);
+                        // 关键修复：播放音乐时 CPU 高负载，AFE 的 fetch 检测任务（低优先级）
+                        // 来不及消费 FEED 数据，导致 "AFE(FEED) ringbuffer full" 疯狂刷屏，
+                        // 既浪费 CPU 又可能丢失唤醒词数据。这里喂完一次后主动让出 CPU，
+                        // 给检测任务留出 fetch 时间，避免 FEED 缓冲区堆积。
+                        vTaskDelay(pdMS_TO_TICKS(20));
                         continue;
                     }
                 }
             }
             // 跳过其他音频处理，避免音乐被当作麦克风输入
-            // 静态变量用于减少日志输出频率
-            static int skip_count = 0;
-            skip_count++;
-            if (skip_count % 10 == 0) {  // 每1000次跳过记录一次日志
-                ESP_LOGD(TAG, "Music playing: skipping audio input processing (skipped %d times)", skip_count);
-            }
-            vTaskDelay(pdMS_TO_TICKS(10));
+            vTaskDelay(pdMS_TO_TICKS(20));
             continue;
         }
 
@@ -398,6 +403,47 @@ void AudioService::AudioOutputTask() {
             /* Update the last output time */
             last_output_time_ = std::chrono::steady_clock::now();
             debug_statistics_.playback_count++;
+
+            // 歌词进度：仅音乐播放时按实际输出采样数累计（采样率动态取自 codec）
+            // 加锁保护 lyric_parser_：SetLyrics 可能在 MCP 线程并发修改它。
+            // 回调放到锁外执行，避免持锁调用上层（可能涉及 LVGL/调度）造成阻塞。
+            int lyric_line = -999;   // -999 = 本块无变化
+            std::string lyric_text, lyric_prev, lyric_next, lyric_song, lyric_artist;
+            {
+                std::lock_guard<std::mutex> lyric_lock(lyric_mutex_);
+                // 重要：播放进度必须无条件累计，不能只在"已有歌词"时才加。
+                // 歌词是起播之后 1~3 秒才下载完的，若那段时间不计数，
+                // SetLyrics 时算出的"已播时长"会偏小，歌词就会整体滞后这段时长。
+                if (music_playing_) {
+                    music_played_samples_ += audio_data.size();
+                }
+                if (music_playing_ && !lyric_parser_.empty()) {
+                    int out_rate = codec_->output_sample_rate();
+                    int pos_ms = out_rate > 0 ? (int)(music_played_samples_ * 1000ULL / out_rate) : 0;
+                    pos_ms -= LYRIC_OUTPUT_LATENCY_MS;  // 扣掉 DMA 输出滞后
+                    if (pos_ms < 0) pos_ms = 0;
+                    int line = lyric_parser_.GetLineIndexAt(pos_ms);
+                    // 每 5 秒打一次进度，便于串口诊断歌词是否在推进
+                    if (pos_ms - last_lyric_log_ms_ >= 5000) {
+                        last_lyric_log_ms_ = pos_ms;
+                        ESP_LOGI(TAG, "Lyric progress: pos=%dms line=%d total=%d",
+                                 pos_ms, line, (int)lyric_parser_.size());
+                    }
+                    if (line != last_lyric_line_) {
+                        last_lyric_line_ = line;
+                        lyric_line = line;
+                        lyric_text = lyric_parser_.GetLineText(line);
+                        lyric_prev = line > 0 ? lyric_parser_.GetLineText(line - 1) : "";
+                        lyric_next = lyric_parser_.GetLineText(line + 1);
+                        lyric_song = lyric_song_;
+                        lyric_artist = lyric_artist_;
+                    }
+                }
+            }
+            if (lyric_line != -999 && callbacks_.on_lyric_changed) {
+                callbacks_.on_lyric_changed(lyric_line, lyric_text, lyric_prev, lyric_next,
+                                            lyric_song, lyric_artist);
+            }
             
             // 移除播放延迟，让音频输出任务专注于连续播放
             // 播放速度由音频硬件和采样率控制，不需要软件延迟
@@ -814,10 +860,17 @@ void AudioService::CheckAndUpdateAudioPowerState() {
 // MP3音乐播放相关方法实现
 void AudioService::PlayMusicFromUrl(const std::string& url) {
     ESP_LOGI(TAG, "PlayMusicFromUrl called with URL: %s", url.c_str());
-    
+
     if (music_playing_) {
         ESP_LOGI(TAG, "Music already playing, stopping current music");
         StopMusic();
+    }
+    // 新歌开始：重置播放进度（歌词由 SetLyrics 单独设置，若本首无歌词则保持为空）
+    {
+        std::lock_guard<std::mutex> lyric_lock(lyric_mutex_);
+        music_played_samples_ = 0;
+        last_lyric_line_ = -2;
+        last_lyric_log_ms_ = 0;
     }
     
     // 初始化M4A解码器（如果尚未初始化）
@@ -843,12 +896,17 @@ void AudioService::PlayMusicFromUrl(const std::string& url) {
         
         // 设置音乐播放模式，禁用语音处理避免回声
         SetMusicMode(true);
-        // 启动一个任务来定期获取PCM数据并推送到播放队列
-                    xTaskCreate([](void* arg) {
+        // 启动一个任务来定期获取PCM数据并推送到播放队列（栈分配到 PSRAM，避免挤占内部 SRAM）
+        BaseType_t ret = xTaskCreateWithCaps([](void* arg) {
                         AudioService* audio_service = (AudioService*)arg;
                         audio_service->M4aPcmDataTask();
                         vTaskDelete(NULL);
-                    }, "m4a_pcm_task", 8192, this, 4, nullptr);  // 降低优先级到4，避免抢占音频输出
+                    }, "m4a_pcm_task", 8192, this, 4, nullptr, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (ret != pdPASS) {
+            ESP_LOGE(TAG, "Failed to create M4A PCM task (out of memory), stopping music");
+            StopMusic();
+            return;
+        }
                     
                     // 暂停多线程音频处理任务，避免冲突
                     ESP_LOGI(TAG, "Pausing multi-threaded audio processing tasks for M4A playback");
@@ -858,36 +916,112 @@ void AudioService::PlayMusicFromUrl(const std::string& url) {
 }
 
 void AudioService::StopMusic() {
-    music_playing_ = false;
+    if (!music_playing_) {
+        // 没有在播放，仅确保音乐模式恢复
+        SetMusicMode(false);
+        return;
+    }
+    
+    ESP_LOGI(TAG, "StopMusic: requesting music task to stop");
+    music_playing_ = false;  // 让 M4aPcmDataTask 的循环退出
     current_music_url_.clear();
     
-    // 停止ESP-ADF M4A解码器
+    // 停止 ESP-ADF pipeline，让阻塞在 rb_read / 队列等待的任务尽快醒来
     if (m4a_decoder_) {
         m4a_decoder_->Stop();
         ESP_LOGI(TAG, "ESP-ADF M4A decoder stopped");
     }
     
-    // 清空音频播放队列
+    // 清空音频播放队列，立即停止出声
     {
         std::lock_guard<std::mutex> lock(audio_playback_mutex_);
         audio_playback_queue_.clear();
     }
     audio_playback_cv_.notify_all();
     
-    // 清理M4A解码器
+    // 等待 M4aPcmDataTask 完全退出并清理解码器（避免并发销毁导致崩溃）
+    int wait_ms = 0;
+    while (!music_task_exited_ && wait_ms < 2000) {
+        vTaskDelay(pdMS_TO_TICKS(10));
+        wait_ms += 10;
+    }
+    if (!music_task_exited_) {
+        ESP_LOGW(TAG, "StopMusic: music task did not exit within 2s");
+    }
+    
+    // 此时解码器通常已由任务清理；兜底清理（若任务未清理）
     if (m4a_decoder_) {
         m4a_decoder_->Deinitialize();
         m4a_decoder_.reset();
         ESP_LOGI(TAG, "M4A decoder cleaned up");
     }
     
-    // 退出音乐播放模式，恢复正常的语音处理状态
     SetMusicMode(false);
-    
-    // 音乐播放结束后，恢复设备状态到idle
+    ClearLyrics();  // 停止播放时清除歌词显示
     Application::GetInstance().SetDeviceState(kDeviceStateIdle);
-    
     ESP_LOGI(TAG, "Music stopped and device state restored to idle");
+}
+
+void AudioService::SetLyrics(const std::string& lrc_text, const std::string& song, const std::string& artist) {
+    int lines = 0;
+    int init_line = -1;
+    int init_pos_ms = 0;
+    std::string init_text, init_prev, init_next;
+    {
+        std::lock_guard<std::mutex> lock(lyric_mutex_);
+        lyric_song_ = song;
+        lyric_artist_ = artist;
+        bool ok = lyric_parser_.Parse(lrc_text);
+        lines = (int)lyric_parser_.size();
+
+        // 关键：歌词是在音乐起播之后才下载完成的（约 1~3 秒）。
+        // 这里绝对不能把 music_played_samples_ 清零，否则进度被抹掉，
+        // 歌词会整体滞后起播时长并且永远追不回来（表现为"歌词慢一拍/慢几秒"）。
+        // 只有音乐还没开始播放时才归零。
+        if (!music_playing_) {
+            music_played_samples_ = 0;
+        }
+
+        // 按"当前真实播放位置"直接对齐首行：扣掉输出链路延迟（DMA 缓冲）后取行号，
+        // 这样歌词一挂上就处在正确的歌词行上，而不是从第一行慢慢追。
+        int out_rate = (codec_ != nullptr) ? codec_->output_sample_rate() : 24000;
+        init_pos_ms = out_rate > 0 ? (int)(music_played_samples_ * 1000ULL / out_rate) : 0;
+        init_pos_ms -= LYRIC_OUTPUT_LATENCY_MS;
+        if (init_pos_ms < 0) init_pos_ms = 0;
+
+        init_line = lyric_parser_.GetLineIndexAt(init_pos_ms);
+        init_text = lyric_parser_.GetLineText(init_line);
+        init_prev = init_line > 0 ? lyric_parser_.GetLineText(init_line - 1) : "";
+        init_next = lyric_parser_.GetLineText(init_line + 1);
+
+        last_lyric_line_ = init_line;
+        last_lyric_log_ms_ = init_pos_ms;
+        if (!ok || lines == 0) {
+            ESP_LOGW(TAG, "No valid LRC lines parsed; showing song title only");
+        }
+    }
+    ESP_LOGI(TAG, "Lyrics loaded: %s - %s, %d lines, aligned at %dms -> line %d",
+             song.c_str(), artist.c_str(), lines, init_pos_ms, init_line);
+    // 立即推送一次当前行，让面板马上出现且与声音对齐
+    if (callbacks_.on_lyric_changed) {
+        callbacks_.on_lyric_changed(init_line, init_text, init_prev, init_next, song, artist);
+    }
+}
+
+void AudioService::ClearLyrics() {
+    {
+        std::lock_guard<std::mutex> lock(lyric_mutex_);
+        if (lyric_parser_.empty() && last_lyric_line_ == -2) return;
+        lyric_parser_.Clear();
+        lyric_song_.clear();
+        lyric_artist_.clear();
+        music_played_samples_ = 0;
+        last_lyric_line_ = -2;
+    }
+    // 通知显示层清除歌词（锁外执行）
+    if (callbacks_.on_lyric_changed) {
+        callbacks_.on_lyric_changed(-2, "", "", "", "", "");
+    }
 }
 
 void AudioService::SetMusicMode(bool enabled) {
@@ -1100,6 +1234,14 @@ std::vector<int16_t> AudioService::DecodeWavChunk(const std::vector<uint8_t>& wa
 
 void AudioService::M4aPcmDataTask() {
     ESP_LOGI(TAG, "M4A PCM data task started");
+    music_task_exited_ = false;  // 标记任务运行中，StopMusic 会等待此标志
+
+    // ===== 播放稳定性关键：关闭 WiFi 省电 =====
+    // 在线音乐是边下边播的大流量 HTTP 流，持续数十秒。
+    // 省电模式(WIFI_PS_MIN_MODEM)会降低 beacon 监听频率，长时间下载易中途断线，
+    // 导致 HTTP 流中断（不支持续传）、歌曲播不完。播放全程保持 WiFi 全功率。
+    Board::GetInstance().SetPowerSaveMode(false);
+    ESP_LOGI(TAG, "WiFi power save DISABLED during music playback for stable streaming");
     
     // 等待M4A解码器完全启动，避免开头跳过音乐
     ESP_LOGI(TAG, "Waiting for M4A decoder to fully initialize...");
@@ -1120,13 +1262,46 @@ void AudioService::M4aPcmDataTask() {
     ESP_LOGI(TAG, "M4A data timing: %d bytes = %d samples = %d ms playback time", 
              buffer_size, samples_per_read, playback_time_ms);
     
+    // ===== 咔咔爆音根因修复：跨块连续的线性插值重采样状态 =====
+    // 之前每读一块 PCM 就独立做一次重采样，每块都从 src_idx=0 重新开始，
+    // 丢弃了上一块末尾的相位；而 44100->24000 比例 1.9375 非整数，块边界波形跳变 -> 咔咔爆音。
+    // 修复：用全局采样位置 phase 贯穿整个音频流，并保存上一块最后 1 个样本供下一块插值，
+    // 使重采样在整个流上连续，彻底消除块边界跳变。
+    // （不使用 OpusResampler/silk：它只支持 8/12/16/24/48kHz，不支持 44100 输入。）
+    double resample_pos_phase = 0.0;   // 全局源样本位置（浮点，跨块累加）
+    int16_t resample_prev_sample = 0;  // 上一块最后一个 mono 样本，用于跨块边界插值
+    bool resample_has_prev = false;
+    std::vector<int16_t> mono_with_prev;  // 拼接了上一块尾样本的临时缓冲
+    
+    int consecutive_empty_reads = 0;  // 连续空读计数，用于辅助检测（不再作为唯一退出依据）
+    const int max_empty_reads = 300;   // 兜底阈值：连续空读 300 次（约 1.5 秒）且解码器已结束才退出
+    
+    // 统一队列上限：满检查阈值 与 推送阈值 必须一致，否则中间区间会丢数据
+    // 24kHz mono 下每块约 550 样本，队列上限约 1.5 秒缓冲
+    const size_t queue_max = 64;   // 播放队列上限
+    const size_t queue_high = 48;  // 高水位：达到此值暂停生产，留出播放余量
+    
     while (music_playing_) {
         if (m4a_decoder_) {
-            // 检查队列状态，如果队列太满就暂停数据生产
+            // 检查解码是否出错（明确错误才立即退出）
+            if (m4a_decoder_->IsFinished()) {
+                ESP_LOGI(TAG, "M4A decoder error, exiting PCM data task");
+                break;
+            }
+            
+            // 确定性结束判定：解码器进入 FINISHED/ERROR 状态，且 ringbuffer 已排空
+            // 这是"播完整首歌"的关键：不依赖空读次数猜测，而是等数据真正读完
+            if (m4a_decoder_->IsStreamEnded()) {
+                ESP_LOGI(TAG, "M4A decoder reached end state and ring buffer drained, stream ended");
+                break;
+            }
+            
+            // 高水位检查：队列接近满时暂停生产（此时不解码、不读 ringbuffer，
+            // 等播放任务消费后再继续，绝不丢数据）
             {
                 std::lock_guard<std::mutex> lock(audio_playback_mutex_);
-                if (audio_playback_queue_.size() > 2500) {  // 进一步提高队列阈值，减少暂停
-                    vTaskDelay(pdMS_TO_TICKS(10)); // 增加暂停时间，让播放跟上
+                if (audio_playback_queue_.size() >= queue_high) {
+                    vTaskDelay(pdMS_TO_TICKS(10));
                     continue;
                 }
             }
@@ -1134,55 +1309,115 @@ void AudioService::M4aPcmDataTask() {
             // 从M4A解码器获取PCM数据
             std::vector<int16_t> pcm_data = m4a_decoder_->GetPcmData();
             if (!pcm_data.empty()) {
-                // 直接进行重采样处理，简化流程
-                std::vector<int16_t> processed_pcm = std::move(pcm_data);
+                consecutive_empty_reads = 0;  // 有数据，重置空读计数
+                // 获取解码器实际输出的采样率和通道数
+                int src_sample_rate = 44100;
+                int src_channels = 2;
+                audio_element_info_t info;
+                if (audio_element_getinfo(m4a_decoder_->GetDecoderElement(), &info) == ESP_OK) {
+                    if (info.sample_rates > 0) src_sample_rate = info.sample_rates;
+                    if (info.channels > 0) src_channels = info.channels;
+                }
                 
-                // 重采样：从44100Hz到24000Hz（1.8375:1下采样）- 使用简单低通滤波减少杂声
-                if (processed_pcm.size() >= 4) {
-                    std::vector<int16_t> downsampled_pcm;
-                    const float ratio = 44100.0f / 24000.0f; // 1.8375
-                    const int output_samples = processed_pcm.size() / ratio;
-                    downsampled_pcm.reserve(output_samples);
+                // 第一步：立体声转单声道（左右声道平均，减少信息损失和杂音）
+                std::vector<int16_t> mono_pcm;
+                if (src_channels == 2 && pcm_data.size() >= 2) {
+                    size_t mono_count = pcm_data.size() / 2;
+                    mono_pcm.reserve(mono_count);
+                    for (size_t i = 0; i < mono_count; i++) {
+                        // 左右声道平均，避免只取单声道造成的偏置噪声
+                        int32_t avg = ((int32_t)pcm_data[i * 2] + (int32_t)pcm_data[i * 2 + 1]) / 2;
+                        mono_pcm.push_back((int16_t)avg);
+                    }
+                } else {
+                    mono_pcm = std::move(pcm_data); // 已经是单声道
+                }
+                
+                // 第二步：跨块连续的线性插值重采样到喇叭输出采样率（24000Hz）
+                // 咔咔爆音根因修复：不再每块从 0 开始，而是用一个贯穿整首歌的相位偏移，
+                // 并把上一块最后 1 个样本拼到本块前面，保证块边界波形连续、相位不跳变。
+                // resample_pos_phase = 下一个输出样本相对"本块首个样本"的浮点偏移。
+                std::vector<int16_t> processed_pcm;
+                const int dst_rate = codec_->output_sample_rate(); // 24000Hz
+                if (src_sample_rate != dst_rate && !mono_pcm.empty()) {
+                    const double ratio = (double)src_sample_rate / (double)dst_rate;
+                    const size_t n = mono_pcm.size();
                     
-                    // 简单的3点移动平均低通滤波，减少高频杂声
-                    for (int i = 0; i < output_samples; i++) {
-                        float source_index = i * ratio;
-                        int index = (int)source_index;
-                        
-                        if (index >= 1 && index < processed_pcm.size() - 1) {
-                            // 使用3点移动平均进行简单低通滤波
-                            int32_t sum = (int32_t)processed_pcm[index - 1] + 
-                                         (int32_t)processed_pcm[index] + 
-                                         (int32_t)processed_pcm[index + 1];
-                            int16_t filtered = sum / 3;
-                            downsampled_pcm.push_back(filtered);
-                        } else if (index < processed_pcm.size()) {
-                            // 边界情况，直接使用样本
-                            downsampled_pcm.push_back(processed_pcm[index]);
+                    // 拼接"上一块尾样本 + 本块"，尾样本的源位置紧接上一块末尾（全局连续）
+                    const size_t tail = resample_has_prev ? 1 : 0;
+                    mono_with_prev.resize(tail + n);
+                    if (tail) {
+                        mono_with_prev[0] = resample_prev_sample;
+                        std::copy(mono_pcm.begin(), mono_pcm.end(), mono_with_prev.begin() + 1);
+                    } else {
+                        std::copy(mono_pcm.begin(), mono_pcm.end(), mono_with_prev.begin());
+                    }
+                    
+                    // 本块覆盖的源范围（相对本块首个样本）为 [0, n)。
+                    // 只要下一个输出点的相位还在范围内就继续输出，保证整首歌采样率精确。
+                    size_t out_n = 0;
+                    while (resample_pos_phase + (double)out_n * ratio < (double)n) {
+                        out_n++;
+                    }
+                    
+                    if (out_n > 0) {
+                        processed_pcm.resize(out_n);
+                        for (size_t i = 0; i < out_n; i++) {
+                            // 拼接数组下标 = tail（本块首样本位置）+ 相位偏移
+                            double idx = (double)tail + resample_pos_phase + (double)i * ratio;
+                            size_t idx0 = (size_t)idx;
+                            if (idx0 >= mono_with_prev.size()) {
+                                idx0 = mono_with_prev.size() - 1;
+                            }
+                            size_t idx1 = (idx0 + 1 < mono_with_prev.size()) ? (idx0 + 1) : idx0;
+                            double frac = idx - (double)idx0;
+                            int32_t interp = (int32_t)((double)mono_with_prev[idx0] * (1.0 - frac) + (double)mono_with_prev[idx1] * frac);
+                            processed_pcm[i] = (int16_t)interp;
                         }
                     }
                     
-                    processed_pcm = std::move(downsampled_pcm);
-                    ESP_LOGD(TAG, "Downsampled to %zu samples (44100Hz -> 24000Hz) with 3-point low-pass filter", processed_pcm.size());
+                    // 相位前进：本块输出消耗 out_n*ratio 个源样本，减去本块长度 n，
+                    // 得到相对"下一块首个样本"的相位偏移，供下一块继续使用（关键：跨块连续）。
+                    resample_pos_phase += (double)out_n * ratio - (double)n;
+                    if (resample_pos_phase < 0.0) resample_pos_phase = 0.0;  // 数值保护
+                    
+                    // 保存本块最后一个样本，供下一块跨边界插值
+                    resample_prev_sample = mono_pcm.back();
+                    resample_has_prev = true;
+                } else {
+                    processed_pcm = std::move(mono_pcm); // 采样率已匹配，直接用
                 }
                 
                 // 推送到统一的音频播放队列
-                {
+                // 关键修复：只要队列未达上限就一定要 push 成功，绝不静默丢数据。
+                // 由于上面已用 queue_high 做了高水位限流，正常情况这里一定放得下；
+                // 万一队列被其他任务填满，则短暂等待后重试，而不是丢弃这段 PCM。
+                bool pushed = false;
+                while (!pushed && music_playing_) {
                     std::lock_guard<std::mutex> lock(audio_playback_mutex_);
-                    if (audio_playback_queue_.size() < 2000) {  // 进一步增加队列大小到2000
+                    if (audio_playback_queue_.size() < queue_max) {
                         audio_playback_queue_.push_back(std::move(processed_pcm));
-                        ESP_LOGD(TAG, "Added M4A PCM data to queue, queue size: %zu", 
-                                audio_playback_queue_.size());
-                    } else {
-                        // 队列满了，跳过一些数据以减少丢包
-                        static int skip_count = 0;
-                        skip_count++;
-                        if (skip_count % 10 == 0) {  // 每10次丢包才记录一次日志，减少日志输出
-                            ESP_LOGW(TAG, "Audio playback queue full, dropping M4A PCM data (dropped %d times)", skip_count);
-                        }
+                        pushed = true;
                     }
                 }
-                audio_playback_cv_.notify_all();  // 通知音频输出任务处理新数据
+                if (pushed) {
+                    audio_playback_cv_.notify_all();  // 通知音频输出任务处理新数据
+                } else {
+                    // music_playing_ 变 false，说明被外部停止，丢弃这段数据是安全的
+                    ESP_LOGW(TAG, "Music stopped while pushing PCM, discarding last chunk");
+                }
+            } else {
+                // 空读：解码器暂时没数据。短暂空读是正常的（下载缓冲），
+                // 只有当解码器已进入结束状态（FINISHED/ERROR）且持续空读才退出，
+                // 避免在下载缓冲的短暂空读阶段错误地中断播放
+                consecutive_empty_reads++;
+                
+                // 关键：只有当解码器已明确结束时，空读才代表"数据流耗尽"
+                // 如果解码器还在 RUNNING，空读只是网络/缓冲的短暂停顿，绝不退出
+                if (m4a_decoder_->HasReachedEndState() && consecutive_empty_reads >= max_empty_reads) {
+                    ESP_LOGI(TAG, "M4A data stream ended (decoder finished + %d empty reads), exiting", consecutive_empty_reads);
+                    break;
+                }
             }
         }
         
@@ -1190,19 +1425,59 @@ void AudioService::M4aPcmDataTask() {
         // 根据队列状态动态调整延迟
         {
             std::lock_guard<std::mutex> lock(audio_playback_mutex_);
-            if (audio_playback_queue_.size() > 1500) {
-                vTaskDelay(pdMS_TO_TICKS(100)); // 队列很满时大幅增加延迟
-            } else if (audio_playback_queue_.size() > 1000) {
-                vTaskDelay(pdMS_TO_TICKS(50));  // 队列较满时增加延迟
-            } else if (audio_playback_queue_.size() > 500) {
+            if (audio_playback_queue_.size() > 24) {
+                vTaskDelay(pdMS_TO_TICKS(50)); // 队列较满时增加延迟
+            } else if (audio_playback_queue_.size() > 16) {
                 vTaskDelay(pdMS_TO_TICKS(20));  // 队列中等时中等延迟
             } else {
-                vTaskDelay(pdMS_TO_TICKS(10));  // 队列较空时最小延迟
+                vTaskDelay(pdMS_TO_TICKS(5));  // 队列较空时最小延迟
             }
         }
     }
     
-    ESP_LOGI(TAG, "M4A PCM data task ended");
+    // 播放结束（正常播完或出错），等待队列剩余数据播完，然后清理音乐状态
+    ESP_LOGI(TAG, "M4A PCM data task ended, waiting for playback queue to drain");
+    
+    // 等待音频输出任务把队列里剩余数据播完。
+    // 队列上限 64 块 × 每块约 550 样本 @24000Hz ≈ 1.5 秒，再留一倍余量，最多等 5 秒
+    int drain_wait = 0;
+    const int drain_max = 500;  // 500 × 10ms = 5 秒，足够播完剩余队列
+    while (drain_wait < drain_max) {
+        bool queue_empty;
+        {
+            std::lock_guard<std::mutex> lock(audio_playback_mutex_);
+            queue_empty = audio_playback_queue_.empty();
+        }
+        if (queue_empty) {
+            break;
+        }
+        vTaskDelay(pdMS_TO_TICKS(10));
+        drain_wait++;
+    }
+    if (drain_wait >= drain_max) {
+        ESP_LOGW(TAG, "Playback queue drain timeout (%d ms), forcing cleanup", drain_wait * 10);
+    }
+    
+    // 退出音乐播放模式，恢复语音处理状态
+    if (music_playing_) {
+        music_playing_ = false;
+        SetMusicMode(false);
+        ClearLyrics();  // 播放完成，清除歌词显示
+        // 清理解码器
+        if (m4a_decoder_) {
+            m4a_decoder_->Deinitialize();
+            m4a_decoder_.reset();
+        }
+        current_music_url_.clear();
+        Application::GetInstance().SetDeviceState(kDeviceStateIdle);
+        ESP_LOGI(TAG, "Music playback completed, device state restored to idle");
+    }
+    
+    // 播放结束，恢复 WiFi 省电（若语音通道已打开会由 OnAudioChannelOpened 再次关闭）
+    Board::GetInstance().SetPowerSaveMode(true);
+    ESP_LOGI(TAG, "WiFi power save RESTORED after music playback");
+
+    music_task_exited_ = true;  // 通知 StopMusic：解码器已清理完毕，可安全返回
 }
 
 // 音频解码生产者任务 - 专门负责解码音频数据

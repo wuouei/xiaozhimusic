@@ -11,6 +11,7 @@
 
 #include "board.h"
 
+// DMA 缓冲恢复 6×240 帧 @24kHz = 60ms，兼顾抗抖动与内存占用
 #define AUDIO_CODEC_DMA_DESC_NUM 6
 #define AUDIO_CODEC_DMA_FRAME_NUM 240
 #define AUDIO_CODEC_DEFAULT_MIC_GAIN 30.0
@@ -50,7 +51,7 @@ protected:
     int output_sample_rate_ = 0;
     int input_channels_ = 1;
     int output_channels_ = 1;
-    int output_volume_ = 70;
+    int output_volume_ = 45;  // 降低默认音量，缓解 USB 供电下的功放启动电流冲击（Brownout）
 
     virtual int Read(int16_t* dest, int samples) = 0;
     virtual int Write(const int16_t* data, int samples) = 0;

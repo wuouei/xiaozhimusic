@@ -1,13 +1,9 @@
 set(SOURCES "audio/audio_codec.cc"
             "audio/audio_service.cc"
             "audio/m4a_decoder.cc"
+            "audio/lyric_parser.cc"
             "audio/esp_adf_mp3_player.cc"
             "audio/codecs/no_audio_codec.cc"
-            "audio/codecs/box_audio_codec.cc"
-            "audio/codecs/es8311_audio_codec.cc"
-            "audio/codecs/es8374_audio_codec.cc"
-            "audio/codecs/es8388_audio_codec.cc"
-            "audio/codecs/es8389_audio_codec.cc"
             "audio/codecs/dummy_audio_codec.cc"
             "audio/processors/audio_debugger.cc"
             "led/single_led.cc"
@@ -30,7 +26,7 @@ set(SOURCES "audio/audio_codec.cc"
 
 # 正确处理ESP-ADF路径
 file(TO_CMAKE_PATH "$ENV{ADF_PATH}" ADF_PATH_CMAKE)
-set(INCLUDE_DIRS "." "display" "audio" "protocols" "D:/Software/Espressif/esp-adf/components/esp-adf-libs/esp_codec/include")
+set(INCLUDE_DIRS "." "display" "audio" "protocols" "${ADF_PATH_CMAKE}/components/esp-adf-libs/esp_codec/include")
 
 # 添加板级公共文件
 file(GLOB BOARD_COMMON_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/boards/common/*.cc)

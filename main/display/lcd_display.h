@@ -57,6 +57,23 @@ public:
 
     // Add theme switching function
     virtual void SetTheme(const std::string& theme_name) override;
+
+    // 歌词显示（底部叠加层，懒创建）
+    virtual void ShowLyric(int line_index, const std::string& text,
+                           const std::string& prev_text, const std::string& next_text,
+                           const std::string& song, const std::string& artist) override;
+
+private:
+    lv_obj_t* lyric_panel_ = nullptr;   // 歌词背景面板
+    lv_obj_t* lyric_label_ = nullptr;   // 当前歌词行
+    lv_obj_t* lyric_prev_label_ = nullptr;  // 上一行
+    lv_obj_t* lyric_next_label_ = nullptr;  // 下一行
+    lv_obj_t* lyric_info_label_ = nullptr;  // 歌曲名-歌手（只在开头显示几秒）
+    lv_timer_t* lyric_info_timer_ = nullptr;  // 歌名自动隐藏定时器
+    std::string lyric_info_text_;             // 已显示的歌名，避免重复触发
+    void EnsureLyricPanel();
+    void ShowLyricInfo(const std::string& info);  // 显示歌名并重启隐藏定时器
+    void HideLyricInfo();                         // 隐藏歌名并回收其占用的高度
 };
 
 // RGB LCD显示器
