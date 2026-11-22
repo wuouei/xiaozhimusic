@@ -28,11 +28,21 @@ bool AudioCodec::InputData(std::vector<int16_t>& data) {
 
 void AudioCodec::Start() {
     Settings settings("audio", false);
-    output_volume_ = settings.GetInt("output_volume", output_volume_);
-    if (output_volume_ <= 0) {
-        ESP_LOGW(TAG, "Output volume value (%d) is too small, setting to default (10)", output_volume_);
-        output_volume_ = 10;
+    int saved_volume = settings.GetInt("output_volume", -1);
+    ESP_LOGI(TAG, "Loaded output_volume from NVS = %d", saved_volume);
+
+    // NVS 里没有有效音量时（新设备 / 整片烧录后），使用正常可听的默认音量 70。
+    // 之前 fallback 到 10：经 (10/100)^2=0.01 衰减后只有 1% 幅度，喇叭几乎无声，
+    // 表现为「屏幕有反应、喊小智有反应，但完全听不到声音」。
+    if (saved_volume <= 0) {
+        output_volume_ = 70;
+        Settings settings_w("audio", true);
+        settings_w.SetInt("output_volume", output_volume_);
+        ESP_LOGW(TAG, "No valid volume in NVS, set default to %d and saved", output_volume_);
+    } else {
+        output_volume_ = saved_volume;
     }
+    ESP_LOGI(TAG, "Effective output volume = %d", output_volume_);
 
     if (tx_handle_ != nullptr) {
         ESP_ERROR_CHECK(i2s_channel_enable(tx_handle_));

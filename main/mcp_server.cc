@@ -161,7 +161,23 @@ static std::string extract_song_keyword(const std::string& input) {
     }
     while (!result.empty() && result.back() == ' ') {
         result.pop_back();
-    }   
+    }
+
+    // 泛词兜底：大模型常把"播放音乐"直接当成 keyword 传进来（如用户说"播放音乐你看到的我"
+    // 却只传了"音乐"）。用泛词去搜 Meting 会命中热门歌单，第一条几乎总是"卡农"，
+    // 导致每次都播同一首。这里识别泛词并返回空串，让调用方提示用户给出具体歌名。
+    static const char* generic_words[] = {
+        "音乐", "歌曲", "歌", "听歌", "听音乐", "放音乐", "播放音乐",
+        "一首歌", "来首歌", "来一首歌", "放首歌", "放一首歌", "随便",
+        "music", "song", "play music"
+    };
+    for (auto word : generic_words) {
+        if (result == word) {
+            ESP_LOGW(TAG, "Generic music keyword '%s' rejected, need a specific song name", result.c_str());
+            return "";
+        }
+    }
+
     ESP_LOGI(TAG, "Original keyword: '%s' -> Extracted: '%s'", input.c_str(), result.c_str());
     return result;
 }
@@ -281,7 +297,7 @@ void McpServer::AddCommonTools() {
     auto display = board.GetDisplay();
     if (display && !display->GetTheme().empty()) {
         AddTool("self.screen.set_theme",
-            "Set the theme of the screen. The theme can be `light` or `dark`.",
+            "Set the theme of the screen. The theme can be `light`, `dark`, or `sci-fi` (neon cyberpunk style).",
             PropertyList({
                 Property("theme", kPropertyTypeString)
             }),
@@ -313,7 +329,7 @@ void McpServer::AddCommonTools() {
 
     // 添加音乐搜索和播放工具
     AddTool("test_search_music",
-        "Search and play music by keyword. Use this tool when the user asks to play music, search for songs, or find music. This tool will search for music using the provided keyword and automatically start playing the first result.",
+        "Search and play a specific song. Use this tool when the user asks to play a song. The keyword MUST be the concrete song name (and optionally the artist), e.g. '晴天 周杰伦', '孤勇者', '卡农'. NEVER pass a generic word like '音乐' or '歌曲' as the keyword - if the user did not tell you a specific song name, ask them which song they want instead of calling this tool. Searches and plays the best matching result.",
         PropertyList({
             Property("keyword", kPropertyTypeString, "Music search keyword")
         }),
@@ -323,6 +339,11 @@ void McpServer::AddCommonTools() {
             
             // 提取歌曲名称关键词
             std::string extracted_keyword = extract_song_keyword(keyword);
+            if (extracted_keyword.empty()) {
+                // 泛词（如"音乐"）会导致每次都播同一首热门歌曲，这里明确拒绝并引导用户给出歌名
+                ESP_LOGW(TAG, "Empty/generic keyword, asking user for a specific song name");
+                return "{\"success\": false, \"message\": \"你没有告诉我想听哪首歌。请说出具体的歌曲名（可以说「播放《晴天》」或「播放周杰伦的稻香」），我才能帮你播放\"}";
+            }
             ESP_LOGI(TAG, "Searching for music with extracted keyword: %s", extracted_keyword.c_str());
             
             std::string encoded_keyword = url_encode(extracted_keyword);
@@ -752,8 +773,11 @@ void McpServer::DoToolCall(int id, const std::string& tool_name, const cJSON* to
     cfg.thread_name = "tool_call";
     cfg.stack_size = stack_size;
     cfg.prio = 1;
-    // 将线程栈分配到 PSRAM（外扩内存），避免挤占紧张的内部 SRAM
-    cfg.stack_alloc_caps = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
+    // 栈必须留在内部 SRAM：工具回调会写 NVS，而 NVS 写 flash 前需临时关闭
+    // flash cache；ESP-IDF 会断言此时栈不能位于 PSRAM（cache 关闭后无法访问）。
+    // 若放到 PSRAM，调音量等写 NVS 的工具会触发
+    // esp_task_stack_is_sane_cache_disabled 断言崩溃。
+    cfg.stack_alloc_caps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
     esp_pthread_set_cfg(&cfg);
 
     // Use a thread to call the tool to avoid blocking the main thread

@@ -451,12 +451,23 @@ void Application::Start() {
             if (strcmp(state->valuestring, "start") == 0) {
                 Schedule([this]() {
                     aborted_ = false;
-                    // 如果正在播放音乐，保持listening状态，不切换到speaking
+                    // 音乐播放中收到 TTS，必须区分两种情况（靠设备状态区分，最可靠）：
+                    //  1) listening/connecting：用户真的喊了小智要对话 → 停音乐、切 speaking，
+                    //     让 OnIncomingAudio 能推 TTS 音频包（否则"有文字没声音"）。
+                    //  2) idle：用户点完歌后没再说话，音乐播放时麦克风音频处理被暂停，服务端
+                    //     长时间收不到活动会主动推"看来你现在忙"这类超时告别 TTS 并关会话。
+                    //     这不是用户对话，绝不能停音乐，否则歌曲播到一半被掐断（播不完整）。
+                    //     保持 idle，让音乐继续播完；告别 TTS 音频因非 speaking 会被自然丢弃。
                     if (audio_service_.IsMusicPlaying()) {
-                        ESP_LOGI(TAG, "Music is playing, keeping listening state instead of switching to speaking");
-                        return;
-                    }
-                    if (device_state_ == kDeviceStateIdle || device_state_ == kDeviceStateListening) {
+                        if (device_state_ == kDeviceStateListening || device_state_ == kDeviceStateConnecting) {
+                            ESP_LOGI(TAG, "TTS during music conversation: stopping music so voice can be heard");
+                            audio_service_.StopMusic();
+                            SetDeviceState(kDeviceStateSpeaking);
+                        } else {
+                            ESP_LOGI(TAG, "TTS while music idle: ignoring server goodbye, keep music playing");
+                            return;
+                        }
+                    } else if (device_state_ == kDeviceStateIdle || device_state_ == kDeviceStateListening) {
                         SetDeviceState(kDeviceStateSpeaking);
                     }
                 });

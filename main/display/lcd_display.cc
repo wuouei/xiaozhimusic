@@ -38,6 +38,20 @@
 #define LIGHT_LOW_BATTERY_COLOR      lv_color_black()           // Black for light mode
 
 
+// Color definitions for sci-fi (cyberpunk / deep space) theme
+#define SCIFI_BACKGROUND_COLOR      lv_color_hex(0x050912)     // Deep space blue-black
+#define SCIFI_TEXT_COLOR            lv_color_hex(0x8BF6FF)     // Neon cyan text
+#define SCIFI_CHAT_BACKGROUND_COLOR lv_color_hex(0x0A1424)     // Slightly lighter navy
+#define SCIFI_USER_BUBBLE_COLOR     lv_color_hex(0x123A4A)     // Teal blue bubble
+#define SCIFI_ASSISTANT_BUBBLE_COLOR lv_color_hex(0x0E1C33)    // Deep navy bubble
+#define SCIFI_SYSTEM_BUBBLE_COLOR   lv_color_hex(0x0A1628)     // Dark navy bubble
+#define SCIFI_SYSTEM_TEXT_COLOR     lv_color_hex(0x5B8FA8)     // Muted steel blue
+#define SCIFI_BORDER_COLOR          lv_color_hex(0x00D9FF)     // Neon cyan border
+#define SCIFI_LOW_BATTERY_COLOR     lv_color_hex(0xFF3366)     // Neon red
+#define SCIFI_ACCENT_COLOR          lv_color_hex(0x00D9FF)     // Neon cyan accent
+#define SCIFI_LYRIC_HIGHLIGHT_COLOR lv_color_hex(0x00E5FF)     // Neon cyan lyric highlight
+#define SCIFI_LYRIC_PANEL_BG_COLOR  lv_color_hex(0x030812)     // Near-black blue panel
+
 // Define dark theme colors
 const ThemeColors DARK_THEME = {
     .background = DARK_BACKGROUND_COLOR,
@@ -48,7 +62,10 @@ const ThemeColors DARK_THEME = {
     .system_bubble = DARK_SYSTEM_BUBBLE_COLOR,
     .system_text = DARK_SYSTEM_TEXT_COLOR,
     .border = DARK_BORDER_COLOR,
-    .low_battery = DARK_LOW_BATTERY_COLOR
+    .low_battery = DARK_LOW_BATTERY_COLOR,
+    .accent = DARK_BORDER_COLOR,
+    .lyric_highlight = lv_color_hex(0xFFB347),
+    .lyric_panel_bg = lv_color_hex(0x000000)
 };
 
 // Define light theme colors
@@ -61,26 +78,67 @@ const ThemeColors LIGHT_THEME = {
     .system_bubble = LIGHT_SYSTEM_BUBBLE_COLOR,
     .system_text = LIGHT_SYSTEM_TEXT_COLOR,
     .border = LIGHT_BORDER_COLOR,
-    .low_battery = LIGHT_LOW_BATTERY_COLOR
+    .low_battery = LIGHT_LOW_BATTERY_COLOR,
+    .accent = LIGHT_SYSTEM_TEXT_COLOR,
+    .lyric_highlight = lv_color_hex(0xFFB347),
+    .lyric_panel_bg = lv_color_hex(0x000000)
+};
+
+// Define sci-fi (cyberpunk) theme colors
+const ThemeColors SCIFI_THEME = {
+    .background = SCIFI_BACKGROUND_COLOR,
+    .text = SCIFI_TEXT_COLOR,
+    .chat_background = SCIFI_CHAT_BACKGROUND_COLOR,
+    .user_bubble = SCIFI_USER_BUBBLE_COLOR,
+    .assistant_bubble = SCIFI_ASSISTANT_BUBBLE_COLOR,
+    .system_bubble = SCIFI_SYSTEM_BUBBLE_COLOR,
+    .system_text = SCIFI_SYSTEM_TEXT_COLOR,
+    .border = SCIFI_BORDER_COLOR,
+    .low_battery = SCIFI_LOW_BATTERY_COLOR,
+    .accent = SCIFI_ACCENT_COLOR,
+    .lyric_highlight = SCIFI_LYRIC_HIGHLIGHT_COLOR,
+    .lyric_panel_bg = SCIFI_LYRIC_PANEL_BG_COLOR
 };
 
 
 LV_FONT_DECLARE(font_awesome_30_4);
+LV_FONT_DECLARE(font_puhui_20_4);
+
+// Terminal (classic phosphor green) lyric palette - high contrast on pure black
+#define TERM_LYRIC_BG_COLOR       lv_color_hex(0x000000)     // Pure black, fully opaque
+#define TERM_LYRIC_CUR_COLOR      lv_color_hex(0x33FF33)     // Bright phosphor green (current line)
+#define TERM_LYRIC_CUR_HOT        lv_color_hex(0x8CFF8C)     // Extra-bright green for the playing line
+#define TERM_LYRIC_DIM_COLOR      lv_color_hex(0x1FA01F)     // Dimmed green (prev/next/song info)
+#define TERM_LYRIC_BORDER_COLOR   lv_color_hex(0x00CC00)     // Green border
 
 LcdDisplay::LcdDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_handle_t panel, DisplayFonts fonts, int width, int height)
     : panel_io_(panel_io), panel_(panel), fonts_(fonts) {
     width_ = width;
     height_ = height;
 
-    // Load theme from settings
+    // Load theme from settings. This firmware ships the sci-fi theme as default.
+    // One-time migration: on first boot after flashing, force sci-fi so the new
+    // theme takes effect even if an old theme was stored in NVS. Afterwards the
+    // user's own choice (via self.screen.set_theme) is respected.
     Settings settings("display", false);
-    current_theme_name_ = settings.GetString("theme", "light");
+    current_theme_name_ = settings.GetString("theme", "sci-fi");
+    if (settings.GetInt("scifi_applied", 0) == 0) {
+        current_theme_name_ = "sci-fi";
+        Settings writable("display", true);
+        writable.SetString("theme", "sci-fi");
+        writable.SetInt("scifi_applied", 1);
+        ESP_LOGI(TAG, "Applying sci-fi theme as default (one-time migration)");
+    }
 
     // Update the theme
     if (current_theme_name_ == "dark") {
         current_theme_ = DARK_THEME;
     } else if (current_theme_name_ == "light") {
         current_theme_ = LIGHT_THEME;
+    } else if (current_theme_name_ == "sci-fi" || current_theme_name_ == "scifi") {
+        current_theme_ = SCIFI_THEME;
+    } else {
+        current_theme_ = SCIFI_THEME;
     }
 }
 
@@ -707,6 +765,7 @@ void LcdDisplay::SetupUI() {
     DisplayLockGuard lock(this);
 
     auto screen = lv_screen_active();
+    const bool is_scifi = (current_theme_name_ == "sci-fi" || current_theme_name_ == "scifi");
     lv_obj_set_style_text_font(screen, fonts_.text_font, 0);
     lv_obj_set_style_text_color(screen, current_theme_.text, 0);
     lv_obj_set_style_bg_color(screen, current_theme_.background, 0);
@@ -727,23 +786,35 @@ void LcdDisplay::SetupUI() {
     lv_obj_set_style_radius(status_bar_, 0, 0);
     lv_obj_set_style_bg_color(status_bar_, current_theme_.background, 0);
     lv_obj_set_style_text_color(status_bar_, current_theme_.text, 0);
-    
+    // 科幻主题：状态栏底部霓虹青分隔线
+    if (is_scifi) {
+        lv_obj_set_style_border_width(status_bar_, 1, 0);
+        lv_obj_set_style_border_side(status_bar_, LV_BORDER_SIDE_BOTTOM, 0);
+        lv_obj_set_style_border_color(status_bar_, current_theme_.accent, 0);
+        lv_obj_set_style_pad_bottom(status_bar_, 1, 0);
+    }
+
     /* Content */
     content_ = lv_obj_create(container_);
     lv_obj_set_scrollbar_mode(content_, LV_SCROLLBAR_MODE_OFF);
-    lv_obj_set_style_radius(content_, 0, 0);
+    lv_obj_set_style_radius(content_, is_scifi ? 6 : 0, 0);
     lv_obj_set_width(content_, LV_HOR_RES);
     lv_obj_set_flex_grow(content_, 1);
     lv_obj_set_style_pad_all(content_, 5, 0);
     lv_obj_set_style_bg_color(content_, current_theme_.chat_background, 0);
     lv_obj_set_style_border_color(content_, current_theme_.border, 0); // Border color for content
+    if (is_scifi) {
+        lv_obj_set_style_border_width(content_, 1, 0);
+        lv_obj_set_style_border_color(content_, current_theme_.accent, 0);
+        lv_obj_set_style_pad_all(content_, 12, 0);
+    }
 
     lv_obj_set_flex_flow(content_, LV_FLEX_FLOW_COLUMN); // 垂直布局（从上到下）
     lv_obj_set_flex_align(content_, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_SPACE_EVENLY); // 子对象居中对齐，等距分布
 
     emotion_label_ = lv_label_create(content_);
     lv_obj_set_style_text_font(emotion_label_, &font_awesome_30_4, 0);
-    lv_obj_set_style_text_color(emotion_label_, current_theme_.text, 0);
+    lv_obj_set_style_text_color(emotion_label_, is_scifi ? current_theme_.accent : current_theme_.text, 0);
     lv_label_set_text(emotion_label_, FONT_AWESOME_AI_CHIP);
 
     preview_image_ = lv_image_create(content_);
@@ -805,6 +876,126 @@ void LcdDisplay::SetupUI() {
     lv_obj_set_style_text_color(low_battery_label_, lv_color_white(), 0);
     lv_obj_center(low_battery_label_);
     lv_obj_add_flag(low_battery_popup_, LV_OBJ_FLAG_HIDDEN);
+
+    // 科幻主题：构建待机界面装饰层（绝对定位，不参与 flex 布局）
+    if (is_scifi) {
+        BuildSciFiDecor();
+    }
+}
+
+void LcdDisplay::BuildSciFiDecor() {
+    // 装饰层挂到当前屏幕，不参与 content_ 的 flex 布局。放在前景（默认），
+    // 但装饰元素本身透明且避开中间文字区，圆环恰好环绕图标，视觉上不遮挡。
+    lv_obj_t* scr = lv_screen_active();
+    if (scr == nullptr) return;
+
+    sci_fi_decor_ = lv_obj_create(scr);
+    lv_obj_set_size(sci_fi_decor_, LV_HOR_RES, LV_VER_RES);
+    lv_obj_set_pos(sci_fi_decor_, 0, 0);
+    lv_obj_set_style_bg_opa(sci_fi_decor_, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(sci_fi_decor_, 0, 0);
+    lv_obj_set_style_pad_all(sci_fi_decor_, 0, 0);
+    lv_obj_clear_flag(sci_fi_decor_, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(sci_fi_decor_, LV_OBJ_FLAG_CLICKABLE);
+
+    const lv_color_t neon = SCIFI_ACCENT_COLOR;
+    const lv_color_t soft = SCIFI_TEXT_COLOR;
+
+    // 圆环中心：图标大致位于 content_ 垂直中间，约 y = (状态栏高 + 屏幕高)/2
+    const int cx = LV_HOR_RES / 2;
+    const int cy = LV_VER_RES / 2 + fonts_.text_font->line_height / 2;
+
+    auto add_ring = [&](int diameter, lv_color_t color, lv_opa_t opa, lv_coord_t bw) {
+        lv_obj_t* ring = lv_obj_create(sci_fi_decor_);
+        lv_obj_set_size(ring, diameter, diameter);
+        lv_obj_align(ring, LV_ALIGN_TOP_LEFT, cx - diameter / 2, cy - diameter / 2);
+        lv_obj_set_style_radius(ring, LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_bg_opa(ring, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(ring, bw, 0);
+        lv_obj_set_style_border_color(ring, color, 0);
+        lv_obj_set_style_border_opa(ring, opa, 0);
+        lv_obj_clear_flag(ring, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_clear_flag(ring, LV_OBJ_FLAG_CLICKABLE);
+        return ring;
+    };
+    // 三层同心圆环：外圈暗、中圈亮点、内圈细
+    add_ring(132, neon, LV_OPA_30, 1);
+    add_ring(112, neon, LV_OPA_60, 2);
+    add_ring(92,  soft, LV_OPA_40, 1);
+
+    // 环上发光节点（上、右）
+    auto add_node = [&](int x, int y, int d) {
+        lv_obj_t* node = lv_obj_create(sci_fi_decor_);
+        lv_obj_set_size(node, d, d);
+        lv_obj_align(node, LV_ALIGN_TOP_LEFT, x, y);
+        lv_obj_set_style_radius(node, LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_bg_color(node, lv_color_hex(0x00E5FF), 0);
+        lv_obj_set_style_bg_opa(node, LV_OPA_COVER, 0);
+        lv_obj_set_style_border_width(node, 0, 0);
+        lv_obj_clear_flag(node, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_clear_flag(node, LV_OBJ_FLAG_CLICKABLE);
+    };
+    add_node(cx - 3, cy - 59, 6);   // 顶部节点
+    add_node(cx + 56, cy - 3, 6);   // 右侧节点
+    add_node(cx - 2, cy + 56, 4);   // 底部小节点
+
+    // 四角 HUD 定位角标（L 形：横 + 竖 两条细线）
+    const int m = 8, len = 16, t = 2;
+    auto hline = [&](int x, int y, int w) {
+        lv_obj_t* l = lv_obj_create(sci_fi_decor_);
+        lv_obj_set_size(l, w, t);
+        lv_obj_align(l, LV_ALIGN_TOP_LEFT, x, y);
+        lv_obj_set_style_bg_color(l, neon, 0);
+        lv_obj_set_style_border_width(l, 0, 0);
+        lv_obj_set_style_radius(l, 0, 0);
+        lv_obj_clear_flag(l, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_clear_flag(l, LV_OBJ_FLAG_CLICKABLE);
+    };
+    auto vline = [&](int x, int y, int h) {
+        lv_obj_t* l = lv_obj_create(sci_fi_decor_);
+        lv_obj_set_size(l, t, h);
+        lv_obj_align(l, LV_ALIGN_TOP_LEFT, x, y);
+        lv_obj_set_style_bg_color(l, neon, 0);
+        lv_obj_set_style_border_width(l, 0, 0);
+        lv_obj_set_style_radius(l, 0, 0);
+        lv_obj_clear_flag(l, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_clear_flag(l, LV_OBJ_FLAG_CLICKABLE);
+    };
+    // 左上
+    hline(m, m, len);      vline(m, m, len);
+    // 右上
+    hline(LV_HOR_RES - m - len, m, len);  vline(LV_HOR_RES - m - t, m, len);
+    // 左下
+    hline(m, LV_VER_RES - m - t, len);    vline(m, LV_VER_RES - m - len, len);
+    // 右下
+    hline(LV_HOR_RES - m - len, LV_VER_RES - m - t, len);
+    vline(LV_HOR_RES - m - t, LV_VER_RES - m - len, len);
+
+    // 两侧点阵装饰（每侧 6 个小点，竖向排列）
+    auto dot = [&](int x, int y) {
+        lv_obj_t* d = lv_obj_create(sci_fi_decor_);
+        lv_obj_set_size(d, 2, 2);
+        lv_obj_align(d, LV_ALIGN_TOP_LEFT, x, y);
+        lv_obj_set_style_radius(d, LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_bg_color(d, soft, 0);
+        lv_obj_set_style_bg_opa(d, LV_OPA_40, 0);
+        lv_obj_set_style_border_width(d, 0, 0);
+        lv_obj_clear_flag(d, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_clear_flag(d, LV_OBJ_FLAG_CLICKABLE);
+    };
+    for (int i = 0; i < 6; i++) {
+        int y = cy - 30 + i * 12;
+        dot(10, y);
+        dot(LV_HOR_RES - 12, y);
+    }
+
+    // 底部科技感文字
+    lv_obj_t* tag = lv_label_create(sci_fi_decor_);
+    lv_label_set_text(tag, "VOICE ASSISTANT  ·  V1.8.6");
+    lv_obj_set_style_text_font(tag, fonts_.text_font, 0);
+    lv_obj_set_style_text_color(tag, soft, 0);
+    lv_obj_set_style_text_opa(tag, LV_OPA_60, 0);
+    lv_obj_align(tag, LV_ALIGN_BOTTOM_MID, 0, -14);
 }
 
 void LcdDisplay::SetPreviewImage(const lv_img_dsc_t* img_dsc) {
@@ -914,6 +1105,8 @@ void LcdDisplay::SetTheme(const std::string& theme_name) {
         current_theme_ = DARK_THEME;
     } else if (theme_name == "light" || theme_name == "LIGHT") {
         current_theme_ = LIGHT_THEME;
+    } else if (theme_name == "sci-fi" || theme_name == "scifi" || theme_name == "SCI-FI") {
+        current_theme_ = SCIFI_THEME;
     } else {
         // Invalid theme name, return false
         ESP_LOGE(TAG, "Invalid theme name: %s", theme_name.c_str());
@@ -1116,104 +1309,195 @@ static std::string TruncateUtf8(const std::string& s, size_t max_chars) {
     return s.substr(0, i) + "...";
 }
 
-// ============ 歌词显示（底部叠加层，懒创建）============
-// 布局全部用绝对定位 + 固定宽度，不用 flex（flex 在受限高度下会把子项压成 0 高）。
-// 两个阶段：① 歌名显示中（面板较高） ② 歌名隐藏后（面板缩回，歌词上移）
-// 歌名只在每首歌开头显示 4 秒，之后自动隐藏并回收它占的高度。
-//
-// 尺寸按屏幕高度自适应：240 高的 1.54 寸屏如果沿用 320 屏的参数，
-// 面板会超出屏幕下边缘，表现为「有黑框、字被裁」。字体行高固定 20px，
-// 因此小屏把当前行压到 2 行（40px）、歌名行与上下行间距各留 2px。
+// ============ 歌词显示（全屏沉浸式界面，懒创建）============
+// 播放时整块屏幕切换为终端绿歌词界面，铺满整个屏幕：
+//   顶部歌名（暗绿小字） → 上一行（暗绿） → 当前行（30px 大号亮绿 + 高亮发光框 + 左侧播放指示条）
+//   → 下一行（暗绿） → 底部进度条 + 均衡器。
+// 当前行通过「更大字号 + 更亮颜色 + 发光边框 + 指示条 + 上下行弱化」五重手段突出。
+// 全部用绝对定位固定布局，不做面板高度伸缩（全屏下无需回收高度，更稳定）。
 #if DISPLAY_HEIGHT >= 300
-// 大屏（240x320、320x480）：当前行 3 行
-static const int LYRIC_PANEL_H_WITH_INFO = 138;
-static const int LYRIC_PANEL_H_NO_INFO   = 116;
-static const int LYRIC_INFO_Y            = 0;
-static const int LYRIC_PREV_Y            = 4;
-static const int LYRIC_CUR_Y             = 26;
-static const int LYRIC_NEXT_Y            = 92;
-static const int LYRIC_PREV_Y_INFO       = 28;
-static const int LYRIC_CUR_Y_INFO        = 50;
-static const int LYRIC_NEXT_Y_INFO       = 116;
-static const int LYRIC_CUR_H             = 64;
-static const int LYRIC_CUR_MAX_CHARS     = 36;
+// 大屏（240x320、320x480）
+static const int LYRIC_INFO_Y            = 56;
+static const int LYRIC_PREV_Y            = 110;
+static const int LYRIC_FOCUS_Y           = 140;  // 当前行高亮框 y
+static const int LYRIC_FOCUS_H           = 80;   // 当前行高亮框高
+static const int LYRIC_CUR_Y             = 12;   // 当前行文字在框内 y 偏移（垂直居中）
+static const int LYRIC_NEXT_Y            = 244;
+static const int LYRIC_CUR_H             = 54;   // 20px 行高 25 × 2 行
+static const int LYRIC_CUR_MAX_CHARS     = 24;
 #else
-// 小屏（240x240 1.54 寸）：当前行 2 行，整块面板控制在 110px 内
-static const int LYRIC_PANEL_H_WITH_INFO = 110;
-static const int LYRIC_PANEL_H_NO_INFO   = 90;
-static const int LYRIC_INFO_Y            = 0;
-static const int LYRIC_PREV_Y            = 2;
-static const int LYRIC_CUR_Y             = 24;
-static const int LYRIC_NEXT_Y            = 66;
-static const int LYRIC_PREV_Y_INFO       = 22;
-static const int LYRIC_CUR_Y_INFO        = 44;
-static const int LYRIC_NEXT_Y_INFO       = 86;
-static const int LYRIC_CUR_H             = 40;
-static const int LYRIC_CUR_MAX_CHARS     = 26;
+// 小屏（240x240 1.54 寸）
+static const int LYRIC_INFO_Y            = 32;
+static const int LYRIC_PREV_Y            = 64;
+static const int LYRIC_FOCUS_Y           = 92;   // 当前行高亮框 y
+static const int LYRIC_FOCUS_H           = 80;   // 当前行高亮框高
+static const int LYRIC_CUR_Y             = 13;   // 当前行文字在框内 y 偏移（垂直居中）
+static const int LYRIC_NEXT_Y            = 182;
+static const int LYRIC_CUR_H             = 54;   // 20px 行高 25 × 2 行
+static const int LYRIC_CUR_MAX_CHARS     = 20;   // 20px 一行约 10 字，两行约 20 字
 #endif
 
 void LcdDisplay::EnsureLyricPanel() {
     if (lyric_panel_ != nullptr) return;
 
-    const int panel_w = LV_HOR_RES - 12;
-    const int label_w = panel_w - 16;
+    const int panel_w = LV_HOR_RES;
+    const int label_w = panel_w - 24;
 
-    // 直接挂到当前屏幕，独立于 content_/status_bar_ 布局，两种 style 都可用
+    // 挂到当前屏幕，全屏铺满，独立于 content_/status_bar_ 布局
     lv_obj_t* scr = lv_screen_active();
     if (scr == nullptr) return;
     lyric_panel_ = lv_obj_create(scr);
-    lv_obj_set_size(lyric_panel_, panel_w, LYRIC_PANEL_H_NO_INFO);
-    lv_obj_align(lyric_panel_, LV_ALIGN_BOTTOM_MID, 0, -6);
-    lv_obj_set_style_radius(lyric_panel_, 10, 0);
-    lv_obj_set_style_bg_color(lyric_panel_, lv_color_hex(0x000000), 0);
-    lv_obj_set_style_bg_opa(lyric_panel_, LV_OPA_90, 0);
+    lv_obj_set_size(lyric_panel_, LV_HOR_RES, LV_VER_RES);
+    lv_obj_set_pos(lyric_panel_, 0, 0);
+    lv_obj_set_style_radius(lyric_panel_, 0, 0);
+    // 终端风格：纯黑不透明背景铺满整屏
+    lv_obj_set_style_bg_color(lyric_panel_, TERM_LYRIC_BG_COLOR, 0);
+    lv_obj_set_style_bg_opa(lyric_panel_, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(lyric_panel_, 0, 0);
     lv_obj_set_style_pad_all(lyric_panel_, 0, 0);
     lv_obj_clear_flag(lyric_panel_, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_clear_flag(lyric_panel_, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_move_foreground(lyric_panel_);  // 确保盖在内容之上
 
-    // 歌曲名 - 歌手（小字灰色，只在开头显示）
+    // 顶部霓虹分隔线（科技感）
+    lv_obj_t* top_sep = lv_obj_create(lyric_panel_);
+    lv_obj_set_size(top_sep, label_w, 1);
+    lv_obj_align(top_sep, LV_ALIGN_TOP_MID, 0, LYRIC_INFO_Y - 10);
+    lv_obj_set_style_bg_color(top_sep, TERM_LYRIC_BORDER_COLOR, 0);
+    lv_obj_set_style_border_width(top_sep, 0, 0);
+    lv_obj_clear_flag(top_sep, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(top_sep, LV_OBJ_FLAG_CLICKABLE);
+
+    // 歌曲名 - 歌手（终端暗绿，只在开头显示）
     lyric_info_label_ = lv_label_create(lyric_panel_);
     lv_obj_set_width(lyric_info_label_, label_w);
     lv_obj_align(lyric_info_label_, LV_ALIGN_TOP_MID, 0, LYRIC_INFO_Y);
     lv_label_set_long_mode(lyric_info_label_, LV_LABEL_LONG_DOT);
     lv_label_set_text(lyric_info_label_, "");
     lv_obj_set_style_text_align(lyric_info_label_, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_text_font(lyric_info_label_, fonts_.text_font, 0);
-    lv_obj_set_style_text_color(lyric_info_label_, lv_color_hex(0x9E9E9E), 0);
+    lv_obj_set_style_text_font(lyric_info_label_, &font_puhui_20_4, 0);
+    lv_obj_set_style_text_color(lyric_info_label_, TERM_LYRIC_DIM_COLOR, 0);
     lv_obj_add_flag(lyric_info_label_, LV_OBJ_FLAG_HIDDEN);
 
-    // 上一行（暗灰）
+    // 上一行（暗绿）
     lyric_prev_label_ = lv_label_create(lyric_panel_);
     lv_obj_set_width(lyric_prev_label_, label_w);
     lv_obj_align(lyric_prev_label_, LV_ALIGN_TOP_MID, 0, LYRIC_PREV_Y);
     lv_label_set_long_mode(lyric_prev_label_, LV_LABEL_LONG_DOT);
     lv_label_set_text(lyric_prev_label_, "");
     lv_obj_set_style_text_align(lyric_prev_label_, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_text_font(lyric_prev_label_, fonts_.text_font, 0);
-    lv_obj_set_style_text_color(lyric_prev_label_, lv_color_hex(0x7A7A7A), 0);
+    lv_obj_set_style_text_font(lyric_prev_label_, &font_puhui_20_4, 0);
+    lv_obj_set_style_text_color(lyric_prev_label_, TERM_LYRIC_DIM_COLOR, 0);
 
-    // 当前行（暖橙高亮，自动换行居中，最多三行）
-    lyric_label_ = lv_label_create(lyric_panel_);
-    lv_obj_set_width(lyric_label_, label_w);
+    // 当前行高亮发光框：半透明深绿底 + 亮绿描边，视觉聚焦正在播放的歌词
+    lyric_focus_bg_ = lv_obj_create(lyric_panel_);
+    lv_obj_set_size(lyric_focus_bg_, label_w, LYRIC_FOCUS_H);
+    lv_obj_align(lyric_focus_bg_, LV_ALIGN_TOP_MID, 0, LYRIC_FOCUS_Y);
+    lv_obj_set_style_bg_color(lyric_focus_bg_, lv_color_hex(0x0A2A0A), 0);
+    lv_obj_set_style_bg_opa(lyric_focus_bg_, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(lyric_focus_bg_, 2, 0);
+    lv_obj_set_style_border_color(lyric_focus_bg_, TERM_LYRIC_CUR_COLOR, 0);
+    lv_obj_set_style_radius(lyric_focus_bg_, 10, 0);
+    lv_obj_set_style_pad_all(lyric_focus_bg_, 0, 0);
+    lv_obj_clear_flag(lyric_focus_bg_, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(lyric_focus_bg_, LV_OBJ_FLAG_CLICKABLE);
+
+    // 左侧播放指示条（动态跳动的竖条，暗示"正在播放"）
+    lv_obj_t* focus_bar = lv_obj_create(lyric_focus_bg_);
+    lv_obj_set_size(focus_bar, 3, LYRIC_FOCUS_H - 24);
+    lv_obj_align(focus_bar, LV_ALIGN_LEFT_MID, 8, 0);
+    lv_obj_set_style_bg_color(focus_bar, TERM_LYRIC_CUR_HOT, 0);
+    lv_obj_set_style_border_width(focus_bar, 0, 0);
+    lv_obj_set_style_radius(focus_bar, 2, 0);
+    lv_obj_clear_flag(focus_bar, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(focus_bar, LV_OBJ_FLAG_CLICKABLE);
+    lyric_focus_bar_ = focus_bar;
+
+    // 当前行（更亮的荧光绿 + 高亮发光框 + 左侧指示条，突出正在播放的歌词；自动换行居中，最多两行）
+    lyric_label_ = lv_label_create(lyric_focus_bg_);
+    lv_obj_set_width(lyric_label_, label_w - 28);
     lv_obj_set_height(lyric_label_, LYRIC_CUR_H);
-    lv_obj_align(lyric_label_, LV_ALIGN_TOP_MID, 0, LYRIC_CUR_Y);
+    lv_obj_align(lyric_label_, LV_ALIGN_TOP_MID, 6, LYRIC_CUR_Y);
     lv_label_set_long_mode(lyric_label_, LV_LABEL_LONG_WRAP);
     lv_label_set_text(lyric_label_, "");
     lv_obj_set_style_text_align(lyric_label_, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_text_font(lyric_label_, fonts_.text_font, 0);
-    lv_obj_set_style_text_color(lyric_label_, lv_color_hex(0xFFB347), 0);
+    lv_obj_set_style_text_font(lyric_label_, &font_puhui_20_4, 0);
+    lv_obj_set_style_text_color(lyric_label_, TERM_LYRIC_CUR_HOT, 0);
 
-    // 下一行（暗灰）
+    // 下一行（暗绿）
     lyric_next_label_ = lv_label_create(lyric_panel_);
     lv_obj_set_width(lyric_next_label_, label_w);
     lv_obj_align(lyric_next_label_, LV_ALIGN_TOP_MID, 0, LYRIC_NEXT_Y);
     lv_label_set_long_mode(lyric_next_label_, LV_LABEL_LONG_DOT);
     lv_label_set_text(lyric_next_label_, "");
     lv_obj_set_style_text_align(lyric_next_label_, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_text_font(lyric_next_label_, fonts_.text_font, 0);
-    lv_obj_set_style_text_color(lyric_next_label_, lv_color_hex(0x7A7A7A), 0);
+    lv_obj_set_style_text_font(lyric_next_label_, &font_puhui_20_4, 0);
+    lv_obj_set_style_text_color(lyric_next_label_, TERM_LYRIC_DIM_COLOR, 0);
+
+#if DISPLAY_HEIGHT < 300
+    // 终端风格进度条：暗绿底槽 + 亮绿填充（装饰性，随均衡器律动轻微推进）
+    lv_obj_t* prog_bg = lv_obj_create(lyric_panel_);
+    lv_obj_set_size(prog_bg, label_w, 4);
+    lv_obj_align(prog_bg, LV_ALIGN_BOTTOM_MID, 0, -22);
+    lv_obj_set_style_bg_color(prog_bg, lv_color_hex(0x123A12), 0);
+    lv_obj_set_style_border_width(prog_bg, 0, 0);
+    lv_obj_set_style_radius(prog_bg, 2, 0);
+    lv_obj_clear_flag(prog_bg, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(prog_bg, LV_OBJ_FLAG_CLICKABLE);
+
+    lyric_progress_fill_ = lv_obj_create(prog_bg);
+    lv_obj_set_size(lyric_progress_fill_, label_w / 3, 4);
+    lv_obj_align(lyric_progress_fill_, LV_ALIGN_LEFT_MID, 0, 0);
+    lv_obj_set_style_bg_color(lyric_progress_fill_, TERM_LYRIC_CUR_COLOR, 0);
+    lv_obj_set_style_border_width(lyric_progress_fill_, 0, 0);
+    lv_obj_set_style_radius(lyric_progress_fill_, 2, 0);
+    lv_obj_clear_flag(lyric_progress_fill_, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(lyric_progress_fill_, LV_OBJ_FLAG_CLICKABLE);
+
+    // 音频均衡器：9 根亮绿竖条，定时器驱动跳动
+    const int eq_count = 9;
+    const int eq_gap = 6;
+    const int eq_bar_w = 5;
+    const int eq_total_w = eq_count * eq_bar_w + (eq_count - 1) * eq_gap;
+    int eq_x0 = (label_w - eq_total_w) / 2;
+    for (int i = 0; i < eq_count; i++) {
+        lv_obj_t* bar = lv_obj_create(lyric_panel_);
+        lv_obj_set_size(bar, eq_bar_w, 4);
+        // 底部对齐，横向用相对面板中心的偏移定位
+        lv_obj_align(bar, LV_ALIGN_BOTTOM_MID, eq_x0 + i * (eq_bar_w + eq_gap) - label_w / 2 + eq_bar_w / 2, -2);
+        lv_obj_set_style_bg_color(bar, TERM_LYRIC_CUR_COLOR, 0);
+        lv_obj_set_style_border_width(bar, 0, 0);
+        lv_obj_set_style_radius(bar, 1, 0);
+        lv_obj_clear_flag(bar, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_clear_flag(bar, LV_OBJ_FLAG_CLICKABLE);
+        lyric_eq_bars_[i] = bar;
+    }
+    lyric_eq_timer_ = lv_timer_create([](lv_timer_t* t) {
+        auto self = static_cast<LcdDisplay*>(lv_timer_get_user_data(t));
+        if (self == nullptr) return;
+        if (self->lyric_panel_ == nullptr ||
+            lv_obj_has_flag(self->lyric_panel_, LV_OBJ_FLAG_HIDDEN)) return;
+        // 停留态的柔和跳动：只改高度，保持底部对齐（条形从底向上长）
+        static int phase = 0;
+        phase++;
+        for (int i = 0; i < 9; i++) {
+            if (self->lyric_eq_bars_[i] == nullptr) continue;
+            int h = 4 + ((phase * (i + 3) * 7) % 11);
+            lv_obj_set_height(self->lyric_eq_bars_[i], h);
+        }
+        // 进度条装饰：约 30 秒一个循环，宽度从 1/3 平滑推进到满
+        if (self->lyric_progress_fill_ != nullptr) {
+            int maxw = lv_obj_get_width(self->lyric_panel_) - 24;
+            int w = maxw / 3 + (2 * maxw / 3) * (phase % 360) / 360;
+            lv_obj_set_width(self->lyric_progress_fill_, w);
+        }
+        // 左侧播放指示条随时间轻微伸缩，强化"正在播放"的律动感
+        if (self->lyric_focus_bar_ != nullptr) {
+            int h = 20 + ((phase * 5) % (LYRIC_FOCUS_H - 30));
+            lv_obj_set_height(self->lyric_focus_bar_, h);
+        }
+    }, 120, this);
+#endif
 
     // 歌名自动隐藏定时器：单次触发，显示歌名时 reset+resume
     lyric_info_timer_ = lv_timer_create([](lv_timer_t* t) {
@@ -1226,17 +1510,13 @@ void LcdDisplay::EnsureLyricPanel() {
     lv_timer_pause(lyric_info_timer_);
 
     lv_obj_add_flag(lyric_panel_, LV_OBJ_FLAG_HIDDEN);
-    ESP_LOGI(TAG, "Lyric panel created (%dx%d)", panel_w, LYRIC_PANEL_H_NO_INFO);
+    ESP_LOGI(TAG, "Lyric panel created (fullscreen %dx%d)", (int)LV_HOR_RES, (int)LV_VER_RES);
 }
 
-// 显示歌名并重启 4 秒隐藏定时器；同时把歌词行让下去，避免和歌名挤在一起
+// 显示歌名并重启 4 秒隐藏定时器（全屏固定布局，歌名位置独立，不影响歌词行）
 void LcdDisplay::ShowLyricInfo(const std::string& info) {
     if (lyric_panel_ == nullptr || lyric_info_label_ == nullptr) return;
-    lv_obj_set_height(lyric_panel_, LYRIC_PANEL_H_WITH_INFO);
-    lv_obj_set_y(lyric_prev_label_, LYRIC_PREV_Y_INFO);
-    lv_obj_set_y(lyric_label_, LYRIC_CUR_Y_INFO);
-    lv_obj_set_y(lyric_next_label_, LYRIC_NEXT_Y_INFO);
-    lv_label_set_text(lyric_info_label_, TruncateUtf8(info, 16).c_str());
+    lv_label_set_text(lyric_info_label_, TruncateUtf8(info, 10).c_str());
     lv_obj_clear_flag(lyric_info_label_, LV_OBJ_FLAG_HIDDEN);
     if (lyric_info_timer_ != nullptr) {
         lv_timer_reset(lyric_info_timer_);
@@ -1244,14 +1524,10 @@ void LcdDisplay::ShowLyricInfo(const std::string& info) {
     }
 }
 
-// 隐藏歌名，并把歌词整体上移，回收歌名占用的 22px
+// 隐藏歌名（全屏固定布局，仅需隐藏 label，无需回收高度）
 void LcdDisplay::HideLyricInfo() {
     if (lyric_panel_ == nullptr || lyric_info_label_ == nullptr) return;
     lv_obj_add_flag(lyric_info_label_, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_set_height(lyric_panel_, LYRIC_PANEL_H_NO_INFO);
-    lv_obj_set_y(lyric_prev_label_, LYRIC_PREV_Y);
-    lv_obj_set_y(lyric_label_, LYRIC_CUR_Y);
-    lv_obj_set_y(lyric_next_label_, LYRIC_NEXT_Y);
     lv_obj_invalidate(lyric_panel_);
 }
 
@@ -1297,8 +1573,8 @@ void LcdDisplay::ShowLyric(int line_index, const std::string& text,
         // 当前行最多 3 行 × 约 13 个汉字，超出会被面板裁掉，这里先截断加省略号
         std::string cur = text.empty() ? "... " : TruncateUtf8(text, LYRIC_CUR_MAX_CHARS);
         lv_label_set_text(lyric_label_, cur.c_str());
-        lv_label_set_text(lyric_prev_label_, TruncateUtf8(prev_text, 13).c_str());
-        lv_label_set_text(lyric_next_label_, TruncateUtf8(next_text, 13).c_str());
+        lv_label_set_text(lyric_prev_label_, TruncateUtf8(prev_text, 10).c_str());
+        lv_label_set_text(lyric_next_label_, TruncateUtf8(next_text, 10).c_str());
     }
     // 主动让整个面板重绘，避免局部刷新遗漏
     lv_obj_invalidate(lyric_panel_);

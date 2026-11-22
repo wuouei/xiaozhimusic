@@ -1,8 +1,8 @@
 # 小智音乐播放器 · Meting 音源 + 实时歌词
 
-基于 [虾哥 xiaozhi-esp32](https://github.com/78/xiaozhi-esp32) 与 [wuooo339/xiaozhimusic](https://github.com/wuooo339/xiaozhimusic) 的二次开发固件：在原有语音助手能力之上，接入 **Meting（网易云）公共音源**，做到「说一句话就能放歌」，并在 SPI 彩屏底部实时滚动歌词。
+基于 [虾哥 xiaozhi-esp32](https://github.com/78/xiaozhi-esp32) 与 [wuooo339/xiaozhimusic](https://github.com/wuooo339/xiaozhimusic) 的二次开发固件：在原有语音助手能力之上，接入 **Meting（网易云）公共音源**，做到「说一句话就能放歌」，并在 SPI 彩屏上以**全屏沉浸界面**实时显示歌词。
 
-> 本仓库为个人改造版，**非上游官方版本**。默认硬件为「ESP32-S3 N16R8 CAM 开发板 + OV3660 摄像头 + ZTS6672 数字麦 + HT517 I2S 功放 + 1.54 寸 **240×240** SPI 彩屏」的面包板方案。
+> 本仓库地址：<https://github.com/openclawyong/xiaozhimusic>（`wuooo339/xiaozhimusic` 为 fork 上游）。本仓库为个人改造版，**非上游官方版本**。默认硬件为「ESP32-S3 N16R8 CAM 开发板 + OV3660 摄像头 + ZTS6672 数字麦 + HT517 I2S 功放 + 1.54 寸 **240×240** SPI 彩屏」的面包板方案。
 
 ---
 
@@ -18,12 +18,14 @@
 |---|---|
 | 🎵 语音点歌 | 说「放一首周杰伦的晴天」即搜索并播放，关键词自动提取（去掉「放一首」「的歌」等口语） |
 | 🔊 320 kbps 音质 | Meting 以 `br=320` 取网易云直链（`type=url` 返回 302 → CDN 真实 MP3 地址） |
-| 📜 实时歌词 | 拉取 LRC，按实际播放进度高亮当前行，底部三行滚动（上一行 / 当前行 / 下一行） |
-| 🏷️ 歌名浮显 | 每首歌开头显示「歌名 - 歌手」4 秒后自动隐藏，不占歌词空间 |
+| 📜 实时歌词 | 拉取 LRC，按实际播放进度高亮当前行；**全屏沉浸歌词界面**（240×240 铺满整屏），当前行用高亮发光框 + 律动指示条 + 更亮荧光绿突出，上下行弱化衬托 |
+| 🏷️ 歌名浮显 | 每首歌开头显示「歌名 - 歌手」4 秒后自动隐藏 |
 | 🎙️ 播放中可打断 | 音乐播放时仍可喊「小智」唤醒并下指令（修复了唤醒任务被饿死的问题） |
-| 📷 拍照识图 | OV3660 摄像头，说「看看这是什么」即可上传图片给大模型 |
+| 📷 拍照识图 | OV3660 摄像头，说「看看这是什么」即可上传图片给大模型；改为**按需上电**（拍照时才初始化），与音乐播放互不抢资源 |
 | 🔁 双解码器 | MP3 走 ESP-ADF `http_stream` + MP3 解码；M4A 走内置解码器，按 URL 自动分流 |
 | 🌐 双音源实例 | 搜索与「直链/歌词」分别使用不同 Meting 实例，规避单个实例的搜索限流 |
+| 🎨 主题切换 | 待机界面「科幻青」霓虹风（圆环 / HUD 角标 / 点阵），歌词界面「终端荧光绿」；语音「设置主题为科幻/深色/浅色」切换 |
+| 🎚️ 音量修复 | 首次启动默认音量由 10 修正为 70（原值衰减后仅 1%，几乎无声） |
 
 ## 与上游的差异
 
@@ -31,9 +33,13 @@
   - 搜索：`https://met.liiiu.cn/meting/api`（失败自动重试一次 → 退回 `https://api.qijieya.cn/meting/`）
   - 直链 / 歌词：`https://api.qijieya.cn/meting/`
 - **音质链路**：解码固定 44.1 kHz → 线性插值重采样到设备输出采样率（24 kHz），跨块保留相位与边界样本，长时间播放不漂移。
-- **歌词**：新增 `LyricParser`（多维时间戳、间奏空行、元数据忽略、二分查找）+ 底部叠加面板。
-- **唤醒**：`afe_wake_word` 检测任务优先级 3 → 7，避免音乐播放时「喂数据」任务占满 ringbuffer 导致喊不动。
-- **稳定性**：HTTP 客户端补 `crt_bundle_attach`，解决 HTTPS 音频流的 `SSL_SETUP_FAILED`；播放队列加高水位限流，杜绝静默丢帧。
+- **歌词**：新增 `LyricParser`（多维时间戳、间奏空行、元数据忽略、二分查找）+ **全屏歌词界面**（当前行高亮框突出，底部进度条 + 均衡器）。
+- **唤醒**：`afe_wake_word` 检测任务优先级 3 → 7，避免音乐播放时「喂数据」任务占满 ringbuffer 导致喊不动；区分真唤醒与服务端 idle 告别，避免误停音乐导致「有回应没声音 / 歌播不完整」。
+- **点歌**：拦截「音乐 / 歌曲」等泛词，拒绝泛搜，要求给出具体歌名（解决「总播放卡农」）。
+- **摄像头**：改为按需上电 + 释放，开启 `CONFIG_CAMERA_PSRAM_DMA`，解决拍照 DMA 内存不足与常驻抢资源导致的无声 / 闪退。
+- **稳定性**：HTTP 客户端补 `crt_bundle_attach`，解决 HTTPS 音频流的 `SSL_SETUP_FAILED`；播放队列加高水位限流，杜绝静默丢帧；MCP `tool_call` 线程栈从 PSRAM 改回内部 SRAM，修复 NVS 写 flash 关 cache 时的栈断言崩溃。
+- **供电**：BOD 阈值调到 2.44 V（LVL7），缓解 USB 供电不足导致的欠压重启。
+- **UI 主题**：新增科幻主题（一次性迁移默认开启），歌词面板配色跟随终端荧光绿风格。
 - **SDK 版本**：官方 `main` 分支已升级到 ESP-IDF 6.0.1+，**本仓库固定在 ESP-IDF v5.4.4 + ESP-ADF v2.7**（ESP-ADF 目前只在 5.x 上验证可用）。请勿用 6.x 编译本仓库，否则 ADF 与 `http_stream` 组件会大量报错。
 
 ## 硬件清单
@@ -280,7 +286,7 @@ idf.py build
 ```
 
 - 首次全量编译约 **5~10 分钟**（视机器性能），产物：
-  - `build/xiaozhi.bin`（应用，约 4.8 MB）
+  - `build/xiaozhi.bin`（应用，约 4.9 MB）
   - `build/bootloader/bootloader.bin`
   - `build/partition_table/partition-table.bin`
 - 看到 `Project build complete` 即成功。
@@ -352,7 +358,7 @@ python -m esptool --chip esp32s3 -p COM3 -b 460800 write_flash 0x100000 build/xi
 |---|---|
 | 开机 | 屏幕亮起，显示表情/状态图标，串口打印 `wifi connected` |
 | 说「你好小智」 | 进入聆听状态，屏幕状态变化 |
-| 说「放一首晴天」 | 屏幕先显示「晴天 - 周杰伦」，随后底部出现三行歌词 |
+| 说「放一首晴天」 | 屏幕先显示「晴天 - 周杰伦」，随后切入全屏歌词界面，当前行有高亮发光框 |
 | 播放中喊「你好小智」 | 音乐立刻停止，进入对话（验证唤醒优先级修复） |
 | 说「看看这是什么」 | 摄像头拍照并上传，助手描述画面 |
 | 静置 1 分钟 | 无重启、无 `ESP_ERROR`、喇叭无爆音 |
@@ -378,7 +384,11 @@ Lyric progress: pos=15000ms line=11 total=68
 
 ### 界面
 
-1.54 寸 240×240 屏上的两个阶段：左边是每首歌开头 4 秒（面板 110px，带「歌名 - 歌手」），右边是歌名隐藏后的纯歌词态（面板 90px，歌词整体居中）。
+1.54 寸 240×240 屏有三种画面：
+
+1. **待机界面**（科幻青）：AI 图标 + 三层同心圆环 + 四角 HUD 角标 + 点阵装饰，底部显示版本号。
+2. **歌词界面**（终端荧光绿，**铺满整个屏幕**）：播放音乐时切入。从上到下依次是歌名（开头显示 4 秒后隐藏）、上一行、**当前行（高亮发光框 + 左侧律动指示条 + 更亮荧光绿）**、下一行，底部是播放进度条与 9 根跳动的均衡器条。上下行用暗绿弱化，衬托当前歌词。播完自动退回待机界面。
+3. **对话界面**：唤醒后显示表情与回复文字。
 
 ![240×240 歌词界面示意](docs/images/screen-preview.svg)
 
@@ -403,7 +413,7 @@ Lyric progress: pos=15000ms line=11 total=68
 | `self.audio_speaker.set_volume` | `volume` | 音量 |
 | `self.get_device_status` | — | 电量、网络、音量等状态 |
 | `self.screen.set_brightness` | `brightness` | 屏幕亮度 |
-| `self.screen.set_theme` | `theme` | 主题切换 |
+| `self.screen.set_theme` | `theme` | 主题切换：`dark` / `light` / `sci-fi`（默认科幻青） |
 | `self.camera.take_photo` | `question` | 拍照识图 |
 
 ## 实现说明
@@ -456,7 +466,7 @@ Meting(type=lrc) ──▶ 纯文本 LRC（兼容 JSON 包装 {"lyric":"..."}）
 | `main/mcp_server.cc` | `METING_SEARCH_BASE` / `METING_STREAM_BASE` | 音源地址，公共实例失效时可自建 Meting 后替换 |
 | `main/boards/bread-compact-wifi-s3cam/config.h` | `AUDIO_OUTPUT_SAMPLE_RATE`（24 kHz） | 不建议改 48 kHz：silk 重采样器与 DMA 内存都会撑不住 |
 | `main/boards/bread-compact-wifi-s3cam/config.h` | I2S / SPI 引脚宏 | 换线后必须同步修改 |
-| `main/display/lcd_display.cc` | 歌词面板高度 / 配色 | 按 `DISPLAY_HEIGHT` 自适应：240 高屏用 90 / 110 px（当前行 2 行），≥300 高屏用 116 / 138 px（当前行 3 行） |
+| `main/display/lcd_display.cc` | 歌词界面布局 / 配色 | 全屏歌词界面，Y 坐标按 `DISPLAY_HEIGHT` 自适应（240 高屏 / ≥300 高屏两套）；当前行高亮框 `lyric_focus_bg_`、配色见 `TERM_LYRIC_*` 宏 |
 
 ## 常见问题
 
@@ -483,7 +493,7 @@ Get-CimInstance Win32_Process -Filter "Name='python.exe'" | Where-Object { $_.Co
 板子不是 N16R8，或 PSRAM 模式选错。确认 menuconfig 里 `Octal Mode PSRAM` + `80 MHz`，Flash 16 MB 且分区表为 `partitions/v1/16m.csv`。
 
 **屏幕白屏 / 花屏 / 只显示一半**
-① 检查 `BLK` 是否接到 GPIO38；② `LCD Type` 必须是 `240*240`（选成 240×320 会让底部 80 行画在屏幕外，歌词面板正好被裁掉）；③ 部分模组需要把 `DISPLAY_INVERT_COLOR` 或 `DISPLAY_SPI_MODE` 反一下。
+① 检查 `BLK` 是否接到 GPIO38；② `LCD Type` 必须是 `240*240`（选成 240×320 会让底部 80 行画在屏幕外，全屏歌词界面被裁掉）；③ 部分模组需要把 `DISPLAY_INVERT_COLOR` 或 `DISPLAY_SPI_MODE` 反一下。
 
 **喇叭完全没声音，但日志显示在播放**
 先测 HT517 的 `SD` 脚有没有拉高（悬空即静音）；再确认 `VIN` 是 5 V、与主控共地；最后确认 `DIN/BCLK/LRC` 没有和麦克风的三根线接反。
@@ -501,10 +511,13 @@ Get-CimInstance Win32_Process -Filter "Name='python.exe'" | Where-Object { $_.Co
 调 `LYRIC_OUTPUT_LATENCY_MS`。若偏差是「几秒」量级，多半不是补偿问题，而是 LRC 与音频版本不匹配（同首歌不同版本前奏长度不同）。
 
 **个别汉字显示成空白或方块**
-字库是裁剪过的 `font_puhui_16_4`，生僻字缺字形。要彻底解决需换全字库字体（体积增加 1~2 MB）。
+字库是裁剪过的 `font_puhui_20_4`（歌词）与 `font_puhui_16_4`（UI），生僻字缺字形。要彻底解决需换全字库字体，但 30px 全字库会使固件从约 4.9 MB 涨到 7.2 MB，超出 6 MB 的 app 分区——如需更大字，建议裁剪常用字而非整库引入。
 
 **整片烧录后 Wi-Fi 没了**
 整片烧录会覆盖 NVS 分区。重新配网（连设备热点 → `192.168.4.1`），或平时只用 `idf.py app-flash`。
+
+**开机无限重启 / 黑屏，串口报 `ESP_ERR_NVS_KEY_TOO_LONG (0x1109)`**
+ESP32 的 NVS key **最长 15 字符**。任何 `Settings::SetInt/SetString` 的 key 超长都会因内部 `ESP_ERROR_CHECK` 直接 `abort()`，表现为开机约 2 秒就重启的死循环（屏幕全黑）。因 `Get*` 读超长 key 时静默返回默认值、而 `Set*` 写时崩溃，典型症状是「读默认、写崩溃」。新增 NVS key 时务必先数字符数。
 
 ## 目录结构
 
@@ -517,7 +530,7 @@ main/
 │   ├── lyric_parser.cc         # LRC 解析（时间戳 / 元数据 / 二分查找）
 │   └── wake_words/afe_wake_word.cc  # 唤醒词，播放时也能唤醒
 ├── display/
-│   └── lcd_display.cc          # 主界面 + 底部歌词面板
+│   └── lcd_display.cc          # 主界面（待机科幻主题）+ 全屏歌词界面 + 主题切换
 ├── boards/
 │   ├── bread-compact-wifi-s3cam/
 │   │   ├── compact_wifi_board_s3cam.cc  # 本机默认板型：SPI 屏 + I2S simplex + 摄像头

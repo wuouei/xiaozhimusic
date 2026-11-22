@@ -11,26 +11,41 @@
 
 #define TAG "Esp32Camera"
 
-Esp32Camera::Esp32Camera(const camera_config_t& config) {
-    // camera init
-    esp_err_t err = esp_camera_init(&config); // 配置上面定义的参数
+Esp32Camera::Esp32Camera(const camera_config_t& config) : config_(config) {
+    // 摄像头改为按需上电：构造时只保存配置，不调用 esp_camera_init。
+    // 原因：OV3660 一旦初始化，esp32-camera 会创建优先级 configMAX_PRIORITIES-2(≈23)
+    // 的 cam_task 持续占用 CPU/PSRAM，并让传感器/XCLK 一直耗电，直接把音频任务
+    // (audio_input 优先级8 / audio_output 优先级6)饿死，表现为「有反应但喇叭没声音」。
+    // 用户实测拆掉摄像头即恢复正常，证实冲突源头在此。
+    // 现在只在真正拍照问答时(Capture)才初始化，拍完释放，兼顾两个功能。
+    memset(&preview_image_, 0, sizeof(preview_image_));
+}
+
+bool Esp32Camera::EnsureInitialized() {
+    if (initialized_) {
+        return true;
+    }
+
+    esp_err_t err = esp_camera_init(&config_);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Camera init failed with error 0x%x", err);
-        return;
+        return false;
     }
 
-    sensor_t *s = esp_camera_sensor_get(); // 获取摄像头型号
-    if (s->id.PID == GC0308_PID) {
-        s->set_hmirror(s, 0);  // 这里控制摄像头镜像 写1镜像 写0不镜像
+    sensor_t *s = esp_camera_sensor_get();
+    if (s != nullptr && s->id.PID == GC0308_PID) {
+        s->set_hmirror(s, 0);
     }
+    // 恢复之前保存的镜像/翻转设置
+    SetHMirror(hmirror_);
+    SetVFlip(vflip_);
 
     // 初始化预览图片的内存
-    memset(&preview_image_, 0, sizeof(preview_image_));
     preview_image_.header.magic = LV_IMAGE_HEADER_MAGIC;
     preview_image_.header.cf = LV_COLOR_FORMAT_RGB565;
     preview_image_.header.flags = LV_IMAGE_FLAGS_ALLOCATED | LV_IMAGE_FLAGS_MODIFIABLE;
 
-    switch (config.frame_size) {
+    switch (config_.frame_size) {
         case FRAMESIZE_SVGA:
             preview_image_.header.w = 800;
             preview_image_.header.h = 600;
@@ -52,10 +67,11 @@ Esp32Camera::Esp32Camera(const camera_config_t& config) {
             preview_image_.header.h = 240;
             break;
         default:
-            ESP_LOGE(TAG, "Unsupported frame size: %d, image preview will not be shown", config.frame_size);
+            ESP_LOGE(TAG, "Unsupported frame size: %d, image preview will not be shown", config_.frame_size);
             preview_image_.data_size = 0;
             preview_image_.data = nullptr;
-            return;
+            initialized_ = true;
+            return true;
     }
 
     preview_image_.header.stride = preview_image_.header.w * 2;
@@ -63,11 +79,18 @@ Esp32Camera::Esp32Camera(const camera_config_t& config) {
     preview_image_.data = (uint8_t*)heap_caps_malloc(preview_image_.data_size, MALLOC_CAP_SPIRAM);
     if (preview_image_.data == nullptr) {
         ESP_LOGE(TAG, "Failed to allocate memory for preview image");
-        return;
     }
+    initialized_ = true;
+    return true;
 }
 
-Esp32Camera::~Esp32Camera() {
+void Esp32Camera::Release() {
+    if (!initialized_) {
+        return;
+    }
+    if (encoder_thread_.joinable()) {
+        encoder_thread_.join();
+    }
     if (fb_) {
         esp_camera_fb_return(fb_);
         fb_ = nullptr;
@@ -75,8 +98,15 @@ Esp32Camera::~Esp32Camera() {
     if (preview_image_.data) {
         heap_caps_free((void*)preview_image_.data);
         preview_image_.data = nullptr;
+        preview_image_.data_size = 0;
     }
     esp_camera_deinit();
+    initialized_ = false;
+    ESP_LOGI(TAG, "Camera deinitialized, audio resources released");
+}
+
+Esp32Camera::~Esp32Camera() {
+    Release();
 }
 
 void Esp32Camera::SetExplainUrl(const std::string& url, const std::string& token) {
@@ -85,21 +115,43 @@ void Esp32Camera::SetExplainUrl(const std::string& url, const std::string& token
 }
 
 bool Esp32Camera::Capture() {
+    // 按需上电：拍照时才初始化摄像头，用完在 Explain 后释放
+    if (!EnsureInitialized()) {
+        return false;
+    }
     if (encoder_thread_.joinable()) {
         encoder_thread_.join();
     }
 
+    // 摄像头刚上电，OV3660 传感器需要时间稳定并输出第一帧。
+    // 常驻方案下开机即初始化，用户拍照时早已稳定；按需方案下必须等待，
+    // 否则 esp_camera_fb_get() 会超时导致「摄像头打开失败」。
+    vTaskDelay(pdMS_TO_TICKS(300));
+
     int frames_to_get = 2;
-    // Try to get a stable frame
-    for (int i = 0; i < frames_to_get; i++) {
-        if (fb_ != nullptr) {
-            esp_camera_fb_return(fb_);
+    // Try to get a stable frame (带重试，进一步提高首帧成功率)
+    for (int attempt = 0; attempt < 3; attempt++) {
+        bool ok = true;
+        for (int i = 0; i < frames_to_get; i++) {
+            if (fb_ != nullptr) {
+                esp_camera_fb_return(fb_);
+                fb_ = nullptr;
+            }
+            fb_ = esp_camera_fb_get();
+            if (fb_ == nullptr) {
+                ok = false;
+                break;
+            }
         }
-        fb_ = esp_camera_fb_get();
-        if (fb_ == nullptr) {
-            ESP_LOGE(TAG, "Camera capture failed");
-            return false;
+        if (ok) {
+            break;
         }
+        ESP_LOGW(TAG, "Camera capture attempt %d failed, retrying", attempt + 1);
+        vTaskDelay(pdMS_TO_TICKS(200));
+    }
+    if (fb_ == nullptr) {
+        ESP_LOGE(TAG, "Camera capture failed after retries");
+        return false;
     }
 
     // 如果预览图片 buffer 为空，则跳过预览
@@ -127,35 +179,43 @@ bool Esp32Camera::Capture() {
     return true;
 }
 bool Esp32Camera::SetHMirror(bool enabled) {
+    hmirror_ = enabled;  // 始终记录设置
+    if (!initialized_) {
+        return true;  // 未上电时只记录，等 EnsureInitialized 时应用
+    }
     sensor_t *s = esp_camera_sensor_get();
     if (s == nullptr) {
         ESP_LOGE(TAG, "Failed to get camera sensor");
         return false;
     }
-    
+
     esp_err_t err = s->set_hmirror(s, enabled);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to set horizontal mirror: %d", err);
         return false;
     }
-    
+
     ESP_LOGI(TAG, "Camera horizontal mirror set to: %s", enabled ? "enabled" : "disabled");
     return true;
 }
 
 bool Esp32Camera::SetVFlip(bool enabled) {
+    vflip_ = enabled;  // 始终记录设置
+    if (!initialized_) {
+        return true;  // 未上电时只记录，等 EnsureInitialized 时应用
+    }
     sensor_t *s = esp_camera_sensor_get();
     if (s == nullptr) {
         ESP_LOGE(TAG, "Failed to get camera sensor");
         return false;
     }
-    
+
     esp_err_t err = s->set_vflip(s, enabled);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to set vertical flip: %d", err);
         return false;
     }
-    
+
     ESP_LOGI(TAG, "Camera vertical flip set to: %s", enabled ? "enabled" : "disabled");
     return true;
 }
@@ -185,6 +245,7 @@ bool Esp32Camera::SetVFlip(bool enabled) {
  */
 std::string Esp32Camera::Explain(const std::string& question) {
     if (explain_url_.empty()) {
+        Release();
         return "{\"success\": false, \"message\": \"Image explain URL or token is not set\"}";
     }
 
@@ -192,6 +253,7 @@ std::string Esp32Camera::Explain(const std::string& question) {
     QueueHandle_t jpeg_queue = xQueueCreate(40, sizeof(JpegChunk));
     if (jpeg_queue == nullptr) {
         ESP_LOGE(TAG, "Failed to create JPEG queue");
+        Release();
         return "{\"success\": false, \"message\": \"Failed to create JPEG queue\"}";
     }
 
@@ -235,6 +297,7 @@ std::string Esp32Camera::Explain(const std::string& question) {
             }
         }
         vQueueDelete(jpeg_queue);
+        Release();
         return "{\"success\": false, \"message\": \"Failed to connect to explain URL\"}";
     }
     
@@ -288,6 +351,8 @@ std::string Esp32Camera::Explain(const std::string& question) {
 
     if (http->GetStatusCode() != 200) {
         ESP_LOGE(TAG, "Failed to upload photo, status code: %d", http->GetStatusCode());
+        http->Close();
+        Release();
         return "{\"success\": false, \"message\": \"Failed to upload photo\"}";
     }
 
@@ -298,5 +363,8 @@ std::string Esp32Camera::Explain(const std::string& question) {
     size_t remain_stack_size = uxTaskGetStackHighWaterMark(nullptr);
     ESP_LOGI(TAG, "Explain image size=%dx%d, compressed size=%d, remain stack size=%d, question=%s\n%s",
         fb_->width, fb_->height, total_sent, remain_stack_size, question.c_str(), result.c_str());
+
+    // 拍照问答完成，立即释放摄像头，避免高优先级 cam_task 持续抢占音频资源
+    Release();
     return result;
 }

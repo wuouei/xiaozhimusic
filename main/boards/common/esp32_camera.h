@@ -23,6 +23,13 @@ private:
     std::string explain_url_;
     std::string explain_token_;
     std::thread encoder_thread_;
+    camera_config_t config_{};
+    bool initialized_ = false;
+    bool hmirror_ = false;
+    bool vflip_ = false;
+
+    bool EnsureInitialized();
+    void Release();
 
 public:
     Esp32Camera(const camera_config_t& config);
