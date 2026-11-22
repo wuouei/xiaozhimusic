@@ -2,7 +2,7 @@
 
 基于 [虾哥 xiaozhi-esp32](https://github.com/78/xiaozhi-esp32) 与 [wuooo339/xiaozhimusic](https://github.com/wuooo339/xiaozhimusic) 的二次开发固件：在原有语音助手能力之上，接入 **Meting（网易云）公共音源**，做到「说一句话就能放歌」，并在 SPI 彩屏上以**全屏沉浸界面**实时显示歌词。
 
-> 本仓库地址：<https://github.com/openclawyong/xiaozhimusic>（`wuooo339/xiaozhimusic` 为 fork 上游）。本仓库为个人改造版，**非上游官方版本**。默认硬件为「ESP32-S3 N16R8 CAM 开发板 + OV3660 摄像头 + ZTS6672 数字麦 + HT517 I2S 功放 + 1.54 寸 **240×240** SPI 彩屏」的面包板方案。
+> 本仓库地址：<https://github.com/wuouei/xiaozhimusic>（`wuooo339/xiaozhimusic` 为 fork 上游）。本仓库为个人改造版，**非上游官方版本**。默认硬件为「ESP32-S3 N16R8 CAM 开发板 + OV3660 摄像头 + ZTS6672 数字麦 + HT517 I2S 功放 + 1.54 寸 **240×240** SPI 彩屏」的面包板方案。
 
 ---
 
@@ -228,7 +228,7 @@ setx ADF_PATH "C:\Espressif\esp-adf"
 
 ```powershell
 cd C:\Users\<你的用户名>
-git clone https://github.com/openclawyong/xiaozhimusic.git
+git clone https://github.com/wuouei/xiaozhimusic.git
 cd xiaozhimusic
 ```
 
